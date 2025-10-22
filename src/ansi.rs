@@ -48,25 +48,25 @@ pub trait AnsiGrid {
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
-enum State {
+enum AnsiState {
     Normal,
     Escape,
     Csi,
     Osc,
 }
 
-pub struct Parser {
-    state: State,
+pub struct AnsiParser {
+    state: AnsiState,
     params: Vec<u16>,
     current_param: u16,
     osc_buffer: String,
     in_osc_escape: bool,
 }
 
-impl Parser {
+impl AnsiParser {
     pub fn new() -> Self {
         Self {
-            state: State::Normal,
+            state: AnsiState::Normal,
             params: Vec::new(),
             current_param: 0,
             osc_buffer: String::new(),
@@ -76,17 +76,17 @@ impl Parser {
 
     pub fn process(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match self.state {
-            State::Normal => self.process_normal(byte, grid),
-            State::Escape => self.process_escape(byte, grid),
-            State::Csi => self.process_csi(byte, grid),
-            State::Osc => self.process_osc(byte, grid),
+            AnsiState::Normal => self.process_normal(byte, grid),
+            AnsiState::Escape => self.process_escape(byte, grid),
+            AnsiState::Csi => self.process_csi(byte, grid),
+            AnsiState::Osc => self.process_osc(byte, grid),
         }
     }
 
     fn process_normal(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match byte {
             0x1B => {
-                self.state = State::Escape;
+                self.state = AnsiState::Escape;
             }
             b'\n' => grid.newline(),
             b'\r' => grid.carriage_return(),
@@ -109,12 +109,12 @@ impl Parser {
     fn process_escape(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match byte {
             b'[' => {
-                self.state = State::Csi;
+                self.state = AnsiState::Csi;
                 self.params.clear();
                 self.current_param = 0;
             }
             b']' => {
-                self.state = State::Osc;
+                self.state = AnsiState::Osc;
                 self.osc_buffer.clear();
                 self.in_osc_escape = false;
             }
@@ -122,27 +122,27 @@ impl Parser {
                 // Reset
                 grid.reset_attrs();
                 grid.clear_screen();
-                self.state = State::Normal;
+                self.state = AnsiState::Normal;
             }
             b'D' => {
                 // Index
                 grid.newline();
-                self.state = State::Normal;
+                self.state = AnsiState::Normal;
             }
             b'E' => {
                 // Next line
                 grid.carriage_return();
                 grid.newline();
-                self.state = State::Normal;
+                self.state = AnsiState::Normal;
             }
             b'M' => {
                 // Reverse index
                 grid.up(1);
-                self.state = State::Normal;
+                self.state = AnsiState::Normal;
             }
             _ => {
                 // Unknown escape sequence, return to normal
-                self.state = State::Normal;
+                self.state = AnsiState::Normal;
             }
         }
     }
@@ -165,7 +165,7 @@ impl Parser {
                     self.params.push(self.current_param);
                 }
                 self.execute_csi(byte, grid);
-                self.state = State::Normal;
+                self.state = AnsiState::Normal;
                 self.params.clear();
                 self.current_param = 0;
             }
@@ -293,7 +293,7 @@ impl Parser {
                 grid.set_title(text);
             }
         }
-        self.state = State::Normal;
+        self.state = AnsiState::Normal;
         self.osc_buffer.clear();
         self.in_osc_escape = false;
     }
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn test_basic_parsing() {
-        let mut p = Parser::new();
+        let mut p = AnsiParser::new();
         let mut m = Mock::new();
         let data = b"Hello World\n";
         for &b in data { p.process(b, &mut m); }
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_colors() {
-        let mut p = Parser::new();
+        let mut p = AnsiParser::new();
         let mut m = Mock::new();
         let data = b"\x1B[31mRed\x1B[0m";
         for &b in data { p.process(b, &mut m); }
