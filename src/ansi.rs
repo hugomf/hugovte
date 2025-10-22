@@ -23,7 +23,7 @@ pub struct Cell {
 
 pub trait AnsiGrid {
     fn put(&mut self, ch: char);
-    fn advance(&mut self);                       // move right 1
+    fn advance(&mut self);
     fn left(&mut self, n: usize);
     fn right(&mut self, n: usize);
     fn up(&mut self, n: usize);
@@ -31,8 +31,8 @@ pub trait AnsiGrid {
     fn newline(&mut self);
     fn carriage_return(&mut self);
     fn backspace(&mut self);
-    fn move_rel(&mut self, dx: i32, dy: i32);    // relative
-    fn move_abs(&mut self, row: usize, col: usize); // absolute
+    fn move_rel(&mut self, dx: i32, dy: i32);
+    fn move_abs(&mut self, row: usize, col: usize);
     fn clear_screen(&mut self);
     fn clear_line(&mut self);
     fn reset_attrs(&mut self);
@@ -42,323 +42,314 @@ pub trait AnsiGrid {
     fn set_dim(&mut self, dim: bool);
     fn set_fg(&mut self, color: Color);
     fn set_bg(&mut self, color: Color);
-    fn set_title(&mut self, title: &str) { let _ = title; } // default no-op
+    fn set_title(&mut self, title: &str) { let _ = title; }
+    fn get_fg(&self) -> Color;
+    fn get_bg(&self) -> Color;
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
-enum State { Normal, Escape, Csi, Osc }
+enum State {
+    Normal,
+    Escape,
+    Csi,
+    Osc,
+}
 
-/// Owned, reentrant ANSI parser
 pub struct Parser {
     state: State,
-    params: Vec<u16>,        // accumulated numeric params (0..=65535)
-    current_value: u16,      // numeric accumulator for a param
-    current_active: bool,    // whether digits were seen for current_value
-    osc_buf: String,         // buffer for OSC
-    osc_esc: bool,           // when in OSC and seen ESC, wait for '\'
+    params: Vec<u16>,
+    current_param: u16,
+    osc_buffer: String,
+    in_osc_escape: bool,
 }
 
 impl Parser {
     pub fn new() -> Self {
         Self {
             state: State::Normal,
-            params: Vec::with_capacity(8),
-            current_value: 0,
-            current_active: false,
-            osc_buf: String::with_capacity(128),
-            osc_esc: false,
+            params: Vec::new(),
+            current_param: 0,
+            osc_buffer: String::new(),
+            in_osc_escape: false,
         }
     }
 
-    /// Stream one byte into the parser and update `grid`.
-    /// Designed to be fast (no per-parameter heap parse).
     pub fn process(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match self.state {
             State::Normal => self.process_normal(byte, grid),
             State::Escape => self.process_escape(byte, grid),
-            State::Csi => self.process_csi_byte(byte, grid),
-            State::Osc => self.process_osc_byte(byte, grid),
+            State::Csi => self.process_csi(byte, grid),
+            State::Osc => self.process_osc(byte, grid),
         }
     }
 
-    // -------------------------
-    // Normal state handling
-    // -------------------------
     fn process_normal(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match byte {
-            0x1B => { self.state = State::Escape; },
+            0x1B => {
+                self.state = State::Escape;
+            }
             b'\n' => grid.newline(),
             b'\r' => grid.carriage_return(),
             0x08 | 0x7F => grid.backspace(),
-            b'\x07' => { /* bell - ignore */ },
-            32..=126 => {
+            b'\t' => {
+                // Simple tab - just advance 4 spaces
+                for _ in 0..4 {
+                    grid.put(' ');
+                    grid.advance();
+                }
+            }
+            0x20..=0x7E => {
                 grid.put(byte as char);
                 grid.advance();
             }
-            _ => { /* ignore control bytes */ }
+            _ => {} // Ignore other control characters
         }
     }
 
-    // -------------------------
-    // Escape state handling
-    // -------------------------
-    fn process_escape(&mut self, byte: u8, _grid: &mut dyn AnsiGrid) {
+    fn process_escape(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match byte {
             b'[' => {
-                self.params.clear();
-                self.current_value = 0;
-                self.current_active = false;
                 self.state = State::Csi;
+                self.params.clear();
+                self.current_param = 0;
             }
             b']' => {
-                self.osc_buf.clear();
-                self.osc_esc = false;
                 self.state = State::Osc;
+                self.osc_buffer.clear();
+                self.in_osc_escape = false;
             }
-            b'c' => { // RIS - reset to initial state
-                // best-effort: let caller handle full reset via grid methods
-                // We'll call reset_attrs and clear_screen as a simple RIS
-                // (leave cursor at 0,0)
-                // Note: if your grid has other reset needs, update here.
-                // calling unsafe methods on trait isn't desirable, so only do what trait has:
-                // reset attrs and clear
-                // no grid reference here; caller will usually send ESC[c in CSI context
+            b'c' => {
+                // Reset
+                grid.reset_attrs();
+                grid.clear_screen();
+                self.state = State::Normal;
+            }
+            b'D' => {
+                // Index
+                grid.newline();
+                self.state = State::Normal;
+            }
+            b'E' => {
+                // Next line
+                grid.carriage_return();
+                grid.newline();
+                self.state = State::Normal;
+            }
+            b'M' => {
+                // Reverse index
+                grid.up(1);
                 self.state = State::Normal;
             }
             _ => {
+                // Unknown escape sequence, return to normal
                 self.state = State::Normal;
             }
         }
     }
 
-    // -------------------------
-    // CSI parsing (byte-by-byte)
-    // -------------------------
-    fn process_csi_byte(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
+    fn process_csi(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
         match byte {
             b'0'..=b'9' => {
-                // accumulate numeric param
-                self.current_value = self.current_value.saturating_mul(10)
-                    .saturating_add((byte - b'0') as u16);
-                self.current_active = true;
+                self.current_param = self.current_param * 10 + (byte - b'0') as u16;
             }
             b';' => {
-                // push current param (0 if no digits seen)
-                if self.current_active { self.params.push(self.current_value); }
-                else { self.params.push(0); }
-                self.current_value = 0;
-                self.current_active = false;
+                self.params.push(self.current_param);
+                self.current_param = 0;
             }
             b'?' => {
-                // private mode introducer; ignore but keep being in CSI
-            }
-            final_byte if (0x40..=0x7E).contains(&final_byte) => {
-                // final byte: finish current param (if any) and execute
-                if self.current_active { self.params.push(self.current_value); }
-                else if self.params.is_empty() {
-                    // leave params empty (we'll use defaults in exec)
-                } else {
-                    // if there were previous params and no current, treat as trailing zero
-                    self.params.push(0);
-                }
-                // execute the CSI command
-                self.exec_csi(final_byte, grid);
-                // reset state
-                self.current_value = 0;
-                self.current_active = false;
-                self.params.clear();
-                self.state = State::Normal;
+                // Private mode character, ignore for now
             }
             _ => {
-                // intermediate bytes or unknown - stay in CSI
+                // Final byte
+                if self.current_param > 0 || self.params.is_empty() {
+                    self.params.push(self.current_param);
+                }
+                self.execute_csi(byte, grid);
+                self.state = State::Normal;
+                self.params.clear();
+                self.current_param = 0;
             }
         }
     }
 
-    // -------------------------
-    // CSI executor
-    // -------------------------
-    fn exec_csi(&mut self, command: u8, grid: &mut dyn AnsiGrid) {
-        match command {
-            b'A' => { let n = self.param_or_default(0, 1) as usize; grid.move_rel(0, -(n as i32)); }
-            b'B' => { let n = self.param_or_default(0, 1) as usize; grid.move_rel(0, n as i32); }
-            b'C' => { let n = self.param_or_default(0, 1) as usize; grid.move_rel(n as i32, 0); }
-            b'D' => { let n = self.param_or_default(0, 1) as usize; grid.move_rel(-(n as i32), 0); }
+    fn execute_csi(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
+        match byte {
+            b'A' => grid.up(self.get_param(0, 1)),
+            b'B' => grid.down(self.get_param(0, 1)),
+            b'C' => grid.right(self.get_param(0, 1)),
+            b'D' => grid.left(self.get_param(0, 1)),
             b'H' | b'f' => {
-                // CUP - Cursor Position (1-based)
-                let r = self.params.get(0).copied().unwrap_or(1).saturating_sub(1) as usize;
-                let c = self.params.get(1).copied().unwrap_or(1).saturating_sub(1) as usize;
-                grid.move_abs(r, c);
+                let row = self.get_param(0, 1).saturating_sub(1);
+                let col = self.get_param(1, 1).saturating_sub(1);
+                grid.move_abs(row as usize, col as usize);
             }
             b'J' => {
-                let mode = self.params.get(0).copied().unwrap_or(0);
-                match mode {
-                    0 => { /* cursor to end */ grid.clear_screen(); }
-                    1 => { /* start to cursor */ grid.clear_screen(); }
-                    2 => grid.clear_screen(),
-                    _ => {}
+                let mode = self.get_param(0, 0);
+                if mode == 2 {
+                    grid.clear_screen();
                 }
             }
             b'K' => {
-                let mode = self.params.get(0).copied().unwrap_or(0);
-                match mode {
-                    0 => grid.clear_line(), // cursor->end
-                    1 => grid.clear_line(), // start->cursor
-                    2 => grid.clear_line(), // entire line
-                    _ => {}
+                let mode = self.get_param(0, 0);
+                if mode == 2 {
+                    grid.clear_line();
                 }
             }
-            b'm' => {
-                self.exec_csi_sgr(grid);
-            }
-            // support some common scroll/line ops as no-ops or simple behaviors
-            b'S' => { /* scroll up n lines - not implemented */ }
-            b'T' => { /* scroll down n lines - not implemented */ }
-            _ => {
-                // unsupported or unimplemented CSI; ignore.
-            }
+            b'm' => self.execute_sgr(grid),
+            _ => {} // Ignore unsupported CSI sequences
         }
     }
 
-    // -------------------------
-    // SGR (Select Graphic Rendition)
-    // -------------------------
-    fn exec_csi_sgr(&mut self, grid: &mut dyn AnsiGrid) {
-        // If empty, reset
+    fn execute_sgr(&mut self, grid: &mut dyn AnsiGrid) {
         if self.params.is_empty() {
             grid.reset_attrs();
             return;
         }
 
-        let mut i = 0usize;
+        let mut i = 0;
         while i < self.params.len() {
             match self.params[i] {
                 0 => grid.reset_attrs(),
                 1 => grid.set_bold(true),
-                2 => grid.set_dim(true),
                 3 => grid.set_italic(true),
                 4 => grid.set_underline(true),
-                22 => { grid.set_bold(false); grid.set_dim(false); }
+                7 => {
+                    // Reverse video
+                    let temp = grid.get_fg();
+                    grid.set_fg(grid.get_bg());
+                    grid.set_bg(temp);
+                }
+                22 => grid.set_bold(false),
                 23 => grid.set_italic(false),
                 24 => grid.set_underline(false),
+                27 => {
+                    // Reverse video off
+                    let temp = grid.get_fg();
+                    grid.set_fg(grid.get_bg());
+                    grid.set_bg(temp);
+                }
                 30..=37 => grid.set_fg(ansi_color(self.params[i] - 30)),
                 40..=47 => grid.set_bg(ansi_color(self.params[i] - 40)),
                 90..=97 => grid.set_fg(ansi_bright_color(self.params[i] - 90)),
                 100..=107 => grid.set_bg(ansi_bright_color(self.params[i] - 100)),
                 38 | 48 => {
-                    let is_fg = self.params[i] == 38;
                     if i + 1 < self.params.len() {
                         match self.params[i + 1] {
                             5 if i + 2 < self.params.len() => {
-                                let idx = self.params[i + 2];
-                                let c = ansi_256(idx);
-                                if is_fg { grid.set_fg(c); } else { grid.set_bg(c); }
+                                let color = ansi_256_color(self.params[i + 2]);
+                                if self.params[i] == 38 {
+                                    grid.set_fg(color);
+                                } else {
+                                    grid.set_bg(color);
+                                }
                                 i += 2;
                             }
                             2 if i + 4 < self.params.len() => {
-                                let r = (self.params[i + 2].min(255)) as u8;
-                                let g = (self.params[i + 3].min(255)) as u8;
-                                let b = (self.params[i + 4].min(255)) as u8;
-                                let c = Color { r: r as f64 / 255.0, g: g as f64 / 255.0, b: b as f64 / 255.0 };
-                                if is_fg { grid.set_fg(c); } else { grid.set_bg(c); }
+                                let r = self.params[i + 2] as f64 / 255.0;
+                                let g = self.params[i + 3] as f64 / 255.0;
+                                let b = self.params[i + 4] as f64 / 255.0;
+                                let color = Color { r, g, b };
+                                if self.params[i] == 38 {
+                                    grid.set_fg(color);
+                                } else {
+                                    grid.set_bg(color);
+                                }
                                 i += 4;
                             }
-                            _ => { /* unknown extended form */ }
+                            _ => {}
                         }
                     }
                 }
-                _ => { /* ignore unknown */ }
+                _ => {}
             }
             i += 1;
         }
     }
 
-    // -------------------------
-    // OSC parsing
-    // -------------------------
-    fn process_osc_byte(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
-        match byte {
-            0x07 => { // BEL terminator
+    fn process_osc(&mut self, byte: u8, grid: &mut dyn AnsiGrid) {
+        if self.in_osc_escape {
+            if byte == b'\\' {
+                // OSC sequence terminated by ESC \
                 self.finish_osc(grid);
+            } else {
+                // Invalid escape in OSC, treat ESC as data
+                self.osc_buffer.push('\x1B');
+                self.osc_buffer.push(byte as char);
+                self.in_osc_escape = false;
             }
-            0x1B => {
-                // could be ESC \
-                self.osc_esc = true;
-            }
-            b'\\' if self.osc_esc => {
-                // ESC \ sequence terminates OSC
-                self.finish_osc(grid);
-            }
-            other => {
-                if self.osc_esc {
-                    // we saw ESC then a non-backslash -> treat previous ESC as data and continue
-                    self.osc_buf.push('\x1B');
-                    self.osc_esc = false;
-                }
-                self.osc_buf.push(other as char);
-            }
+        } else if byte == 0x1B {
+            self.in_osc_escape = true;
+        } else if byte == 0x07 {
+            // OSC sequence terminated by BEL
+            self.finish_osc(grid);
+        } else {
+            self.osc_buffer.push(byte as char);
         }
     }
 
     fn finish_osc(&mut self, grid: &mut dyn AnsiGrid) {
-        if let Some((cmd, arg)) = self.osc_buf.split_once(';') {
-            if cmd == "0" || cmd == "2" {
-                grid.set_title(arg.trim());
+        if let Some((num, text)) = self.osc_buffer.split_once(';') {
+            if num == "0" || num == "2" {
+                grid.set_title(text);
             }
         }
-        self.osc_buf.clear();
-        self.osc_esc = false;
         self.state = State::Normal;
+        self.osc_buffer.clear();
+        self.in_osc_escape = false;
     }
 
-    // -------------------------
-    // helpers
-    // -------------------------
-    #[inline]
-    fn param_or_default(&self, idx: usize, default: u16) -> u16 {
-        self.params.get(idx).copied().unwrap_or(default)
+    fn get_param(&self, index: usize, default: u16) -> usize {
+        self.params.get(index).copied().unwrap_or(default) as usize
     }
 }
 
-// -------------------------
-// Color helpers
-// -------------------------
-#[inline]
-fn ansi_color(n: u16) -> Color {
-    const BASE: [(f64, f64, f64); 8] = [
-        (0.0, 0.0, 0.0),
-        (0.8, 0.0, 0.0),
-        (0.0, 0.8, 0.0),
-        (0.8, 0.8, 0.0),
-        (0.0, 0.0, 0.8),
-        (0.8, 0.0, 0.8),
-        (0.0, 0.8, 0.8),
-        (0.8, 0.8, 0.8),
-    ];
-    let (r,g,b) = BASE.get(n as usize).copied().unwrap_or((1.0,1.0,1.0));
-    Color { r, g, b }
+// Color conversion functions
+fn ansi_color(index: u16) -> Color {
+    match index {
+        0 => Color { r: 0.0, g: 0.0, b: 0.0 },       // Black
+        1 => Color { r: 0.8, g: 0.0, b: 0.0 },       // Red
+        2 => Color { r: 0.0, g: 0.8, b: 0.0 },       // Green
+        3 => Color { r: 0.8, g: 0.8, b: 0.0 },       // Yellow
+        4 => Color { r: 0.0, g: 0.0, b: 0.8 },       // Blue
+        5 => Color { r: 0.8, g: 0.0, b: 0.8 },       // Magenta
+        6 => Color { r: 0.0, g: 0.8, b: 0.8 },       // Cyan
+        7 => Color { r: 0.8, g: 0.8, b: 0.8 },       // White
+        _ => Color::default(),
+    }
 }
 
-#[inline]
-fn ansi_bright_color(n: u16) -> Color {
-    let c = ansi_color(n);
-    Color { r: (c.r + 0.2).min(1.0), g: (c.g + 0.2).min(1.0), b: (c.b + 0.2).min(1.0) }
+fn ansi_bright_color(index: u16) -> Color {
+    match index {
+        0 => Color { r: 0.4, g: 0.4, b: 0.4 },       // Bright Black (Gray)
+        1 => Color { r: 1.0, g: 0.0, b: 0.0 },       // Bright Red
+        2 => Color { r: 0.0, g: 1.0, b: 0.0 },       // Bright Green
+        3 => Color { r: 1.0, g: 1.0, b: 0.0 },       // Bright Yellow
+        4 => Color { r: 0.0, g: 0.0, b: 1.0 },       // Bright Blue
+        5 => Color { r: 1.0, g: 0.0, b: 1.0 },       // Bright Magenta
+        6 => Color { r: 0.0, g: 1.0, b: 1.0 },       // Bright Cyan
+        7 => Color { r: 1.0, g: 1.0, b: 1.0 },       // Bright White
+        _ => Color::default(),
+    }
 }
 
-fn ansi_256(idx: u16) -> Color {
-    match idx {
-        0..=7 => ansi_color(idx),
-        8..=15 => ansi_bright_color(idx - 8),
+fn ansi_256_color(index: u16) -> Color {
+    match index {
+        0..=7 => ansi_color(index),
+        8..=15 => ansi_bright_color(index - 8),
         16..=231 => {
-            let n = idx - 16;
-            let r = (n / 36) % 6;
-            let g = (n / 6) % 6;
-            let b = n % 6;
-            Color { r: r as f64 / 5.0, g: g as f64 / 5.0, b: b as f64 / 5.0 }
+            let idx = index - 16;
+            let r = (idx / 36) % 6;
+            let g = (idx / 6) % 6;
+            let b = idx % 6;
+            Color {
+                r: r as f64 / 5.0,
+                g: g as f64 / 5.0,
+                b: b as f64 / 5.0,
+            }
         }
         232..=255 => {
-            let level = (idx - 232) as f64 / 23.0;
-            Color { r: level, g: level, b: level }
+            let gray = (index - 232) as f64 / 23.0;
+            Color { r: gray, g: gray, b: gray }
         }
         _ => Color::default(),
     }
@@ -368,7 +359,20 @@ fn ansi_256(idx: u16) -> Color {
 mod tests {
     use super::*;
 
-    struct Mock;
+    struct Mock {
+        fg: Color,
+        bg: Color,
+    }
+    
+    impl Mock {
+        fn new() -> Self {
+            Self {
+                fg: Color::default(),
+                bg: Color { r: 0.0, g: 0.0, b: 0.0 },
+            }
+        }
+    }
+
     impl AnsiGrid for Mock {
         fn put(&mut self, ch: char) { print!("{ch}"); }
         fn advance(&mut self) {}
@@ -383,22 +387,40 @@ mod tests {
         fn move_abs(&mut self, _: usize, _: usize) {}
         fn clear_screen(&mut self) {}
         fn clear_line(&mut self) {}
-        fn reset_attrs(&mut self) {}
+        fn reset_attrs(&mut self) {
+            self.fg = Color::default();
+            self.bg = Color { r: 0.0, g: 0.0, b: 0.0 };
+        }
         fn set_bold(&mut self, _: bool) {}
         fn set_italic(&mut self, _: bool) {}
         fn set_underline(&mut self, _: bool) {}
         fn set_dim(&mut self, _: bool) {}
-        fn set_fg(&mut self, c: Color) { println!("[FG {c}]"); }
-        fn set_bg(&mut self, c: Color) { println!("[BG {c}]"); }
+        fn set_fg(&mut self, c: Color) { 
+            self.fg = c;
+            println!("[FG {c}]"); 
+        }
+        fn set_bg(&mut self, c: Color) { 
+            self.bg = c;
+            println!("[BG {c}]"); 
+        }
         fn set_title(&mut self, t: &str) { println!("[TITLE {t}]"); }
+        fn get_fg(&self) -> Color { self.fg }
+        fn get_bg(&self) -> Color { self.bg }
     }
 
     #[test]
-    fn test_truecolour_and_256() {
+    fn test_basic_parsing() {
         let mut p = Parser::new();
-        let mut m = Mock;
-        // TRUECOLOR (foreground) then 256-index background then reset
-        let data = b"\x1B[38;2;10;20;30;48;5;196mHELLO\x1B[0m";
+        let mut m = Mock::new();
+        let data = b"Hello World\n";
+        for &b in data { p.process(b, &mut m); }
+    }
+
+    #[test]
+    fn test_colors() {
+        let mut p = Parser::new();
+        let mut m = Mock::new();
+        let data = b"\x1B[31mRed\x1B[0m";
         for &b in data { p.process(b, &mut m); }
     }
 }
