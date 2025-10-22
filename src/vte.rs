@@ -8,12 +8,92 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::io::{Read, Write};
 use glib::Propagation;
+use std::time::{Instant, Duration};
 
 const DEFAULT_FG: Color = Color { r: 1.0, g: 1.0, b: 1.0 };
 const DEFAULT_BG: Color = Color { r: 0.0, g: 0.0, b: 0.0 };
 const GRID_LINE_COLOR: Color = Color { r: 0.2, g: 0.0, b: 0.0 };
 const SCROLLBACK_LIMIT: usize = 1000;
 const FONT_SIZE: f64 = 14.0;
+const CLICK_TIMEOUT_MS: u128 = 200;
+
+/// Selection State Machine
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SelectionState {
+    /// No selection active
+    Idle,
+    /// Mouse button pressed, waiting to see if it's a click or drag
+    Pressed { start: (usize, usize), timestamp: Instant },
+    /// Actively dragging to extend selection
+    Dragging { start: (usize, usize), current: (usize, usize) },
+    /// Selection is complete and visible
+    Complete { start: (usize, usize), end: (usize, usize) },
+}
+
+impl SelectionState {
+    fn is_active(&self) -> bool {
+        !matches!(self, SelectionState::Idle)
+    }
+
+    fn get_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
+        match self {
+            SelectionState::Pressed { start, .. } => Some((*start, *start)),
+            SelectionState::Dragging { start, current } => Some((*start, *current)),
+            SelectionState::Complete { start, end } => Some((*start, *end)),
+            SelectionState::Idle => None,
+        }
+    }
+
+    fn get_normalized_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
+        let (start, end) = self.get_bounds()?;
+        
+        let (min_row, max_row) = if start.0 <= end.0 {
+            (start.0, end.0)
+        } else {
+            (end.0, start.0)
+        };
+        
+        let (min_col, max_col) = if start.0 == end.0 {
+            // Same row - order by column
+            if start.1 <= end.1 {
+                (start.1, end.1)
+            } else {
+                (end.1, start.1)
+            }
+        } else if start.0 < end.0 {
+            // Different rows - start gets its column, end gets its column
+            (start.1, end.1)
+        } else {
+            (end.1, start.1)
+        };
+        
+        Some(((min_row, min_col), (max_row, max_col)))
+    }
+
+    fn is_position_selected(&self, row: usize, col: usize) -> bool {
+        let Some(((min_row, min_col), (max_row, max_col))) = self.get_normalized_bounds() else {
+            return false;
+        };
+
+        if row < min_row || row > max_row {
+            return false;
+        }
+
+        if row == min_row && row == max_row {
+            // Single row selection
+            col >= min_col && col <= max_col
+        } else if row == min_row {
+            // First row - from start column to end
+            col >= min_col
+        } else if row == max_row {
+            // Last row - from start to end column
+            col <= max_col
+        } else {
+            // Middle rows - entire row selected
+            true
+        }
+    }
+}
 
 /// ----------  Grid  ----------
 pub struct Grid {
@@ -30,9 +110,8 @@ pub struct Grid {
     italic: bool,
     underline: bool,
     dim: bool,
-    // Selection support
-    pub selection_start: Option<(usize, usize)>,
-    pub selection_end: Option<(usize, usize)>,
+    // Selection state machine
+    selection_state: SelectionState,
 }
 
 impl Grid {
@@ -64,8 +143,7 @@ impl Grid {
             italic: false,
             underline: false,
             dim: false,
-            selection_start: None,
-            selection_end: None,
+            selection_state: SelectionState::Idle,
         }
     }
 
@@ -97,26 +175,78 @@ impl Grid {
         self.clear_selection();
     }
 
+    // Selection state machine transitions
     pub fn clear_selection(&mut self) {
-        self.selection_start = None;
-        self.selection_end = None;
+        self.selection_state = SelectionState::Idle;
     }
 
-    pub fn set_selection(&mut self, start: (usize, usize), end: (usize, usize)) {
-        self.selection_start = Some(start);
-        self.selection_end = Some(end);
+    pub fn start_selection(&mut self, row: usize, col: usize) {
+        self.selection_state = SelectionState::Pressed { 
+            start: (row, col), 
+            timestamp: Instant::now() 
+        };
+    }
+
+    pub fn update_selection(&mut self, row: usize, col: usize) {
+        self.selection_state = match self.selection_state {
+            SelectionState::Pressed { start, .. } | SelectionState::Dragging { start, .. } => {
+                // If we start moving, transition to Dragging state
+                SelectionState::Dragging { start, current: (row, col) }
+            }
+            other => other, // Ignore if not in a draggable state
+        };
+    }
+
+    pub fn complete_selection(&mut self, row: usize, col: usize) -> bool {
+        let now = Instant::now();
+        match self.selection_state {
+            SelectionState::Pressed { start, timestamp } => {
+                // Quick click (less than CLICK_TIMEOUT_MS) - clear selection, don't create single-cell selection
+                if now.duration_since(timestamp).as_millis() < CLICK_TIMEOUT_MS {
+                    self.selection_state = SelectionState::Idle;
+                    false // No selection was created
+                } else {
+                    // Long press without movement - create single-cell selection
+                    self.selection_state = SelectionState::Complete { start, end: start };
+                    true // Selection was created
+                }
+            }
+            SelectionState::Dragging { start, .. } => {
+                // Drag operation - complete with current position
+                self.selection_state = SelectionState::Complete { start, end: (row, col) };
+                true // Selection was created
+            }
+            _ => false, // No state change
+        }
+    }
+
+    pub fn is_pressed(&self) -> bool {
+        matches!(self.selection_state, SelectionState::Pressed { .. })
+    }
+
+    pub fn is_dragging(&self) -> bool {
+        matches!(self.selection_state, SelectionState::Dragging { .. })
+    }
+
+    pub fn is_selecting(&self) -> bool {
+        matches!(self.selection_state, SelectionState::Pressed { .. } | SelectionState::Dragging { .. })
+    }
+
+    pub fn has_selection(&self) -> bool {
+        matches!(self.selection_state, SelectionState::Complete { .. })
+    }
+
+    pub fn is_selected(&self, row: usize, col: usize) -> bool {
+        self.selection_state.is_position_selected(row, col)
     }
 
     pub fn get_selected_text(&self) -> String {
-        let (start, end) = match (self.selection_start, self.selection_end) {
-            (Some(s), Some(e)) => (s, e),
-            _ => return String::new(),
+        let Some(((start_row, start_col), (end_row, end_col))) = self.selection_state.get_normalized_bounds() else {
+            return String::new();
         };
 
         let total_rows = self.scrollback.len() + self.rows;
-        let (start_row, start_col) = start;
-        let (end_row, end_col) = end;
-
+        
         if start_row >= total_rows || end_row >= total_rows {
             return String::new();
         }
@@ -151,21 +281,9 @@ impl Grid {
 
         result
     }
-
-    pub fn is_selected(&self, row: usize, col: usize) -> bool {
-        let (Some(start), Some(end)) = (self.selection_start, self.selection_end) else {
-            return false;
-        };
-
-        let (min_row, min_col, max_row, max_col) = if start <= end {
-            (start.0, start.1, end.0, end.1)
-        } else {
-            (end.0, end.1, start.0, start.1)
-        };
-
-        row >= min_row && row <= max_row && col >= min_col && col <= max_col
-    }
 }
+
+// ... (AnsiGrid implementation for Grid remains exactly the same) ...
 
 impl AnsiGrid for Grid {
     fn put(&mut self, ch: char) {
@@ -350,7 +468,7 @@ impl VteTerminal {
         let tx_thread = tx.clone();
 
         thread::spawn(move || {
-            let mut reader = {  // ← ADD 'mut' HERE
+            let mut reader = {
                 let mut m = master_clone.lock().unwrap();
                 m.as_mut().unwrap().try_clone_reader().unwrap()
             };
@@ -504,7 +622,7 @@ impl VteTerminal {
                 return Propagation::Stop;
             }
 
-            // Paste — SYNCHRONOUS, NO GIO
+            // Paste
             if (state.contains(gdk::ModifierType::META_MASK) && keyval == gdk::Key::v)
                 || (state.contains(gdk::ModifierType::CONTROL_MASK) && keyval == gdk::Key::v)
             {
@@ -527,6 +645,14 @@ impl VteTerminal {
             // Regular key
             let mut w = writer_key.lock().unwrap();
             match keyval {
+                gdk::Key::Escape => {
+                    // Clear selection on ESC
+                    {
+                        let mut g = grid_key.lock().unwrap();
+                        g.clear_selection();
+                    }
+                    w.write_all(b"\x1b").unwrap();
+                }
                 gdk::Key::Return => w.write_all(b"\r").unwrap(),
                 gdk::Key::BackSpace => w.write_all(b"\x7f").unwrap(),
                 gdk::Key::Tab => w.write_all(b"\t").unwrap(),
@@ -534,7 +660,6 @@ impl VteTerminal {
                 gdk::Key::Down => w.write_all(b"\x1b[B").unwrap(),
                 gdk::Key::Left => w.write_all(b"\x1b[D").unwrap(),
                 gdk::Key::Right => w.write_all(b"\x1b[C").unwrap(),
-                gdk::Key::Escape => w.write_all(b"\x1b").unwrap(),
                 _ if state.contains(gdk::ModifierType::CONTROL_MASK) && keyval == gdk::Key::d => {
                     w.write_all(b"\x04").unwrap()
                 }
@@ -554,32 +679,58 @@ impl VteTerminal {
         });
         area.add_controller(key_controller);
 
-        // Mouse selection
-        let grid_mouse = Arc::clone(&grid);
-        let tx_mouse = tx.clone();
+        // Mouse selection - state machine transitions
+        let grid_mouse_pressed = Arc::clone(&grid);
+        let tx_mouse_pressed = tx.clone();
         let click_controller = gtk4::GestureClick::new();
         click_controller.set_button(0);
+        
+        // Mouse button pressed - transition to Pressed state
         click_controller.connect_pressed(move |_, _, x, y| {
-            let mut g = grid_mouse.lock().unwrap();
+            let mut g = grid_mouse_pressed.lock().unwrap();
             let col = (x / char_w) as usize;
             let row = (y / char_h) as usize + g.scrollback.len();
+            
+            // Always clear selection on new press
             g.clear_selection();
-            g.set_selection((row, col), (row, col));
+            g.start_selection(row, col);
+            
             drop(g);
-            let _ = tx_mouse.send_blocking(());
+            let _ = tx_mouse_pressed.send_blocking(());
+        });
+        
+        // Mouse button released - transition to appropriate state
+        let grid_mouse_released = Arc::clone(&grid);
+        let tx_mouse_released = tx.clone();
+        click_controller.connect_released(move |_, _, x, y| {
+            let mut g = grid_mouse_released.lock().unwrap();
+            let col = (x / char_w) as usize;
+            let row = (y / char_h) as usize + g.scrollback.len();
+            
+            // Complete selection and check if a selection was actually created
+            let selection_created = g.complete_selection(row, col);
+            
+            // If no selection was created (quick click), ensure we're in Idle state
+            if !selection_created {
+                g.clear_selection();
+            }
+            
+            drop(g);
+            let _ = tx_mouse_released.send_blocking(());
         });
 
-        let grid_mouse2 = Arc::clone(&grid);
-        let tx_mouse2 = tx.clone();
+        // Mouse motion during drag - update Dragging state
+        let grid_mouse_motion = Arc::clone(&grid);
+        let tx_mouse_motion = tx.clone();
         let motion_controller = gtk4::EventControllerMotion::new();
         motion_controller.connect_motion(move |_, x, y| {
-            let mut g = grid_mouse2.lock().unwrap();
-            if let Some(start) = g.selection_start {
+            let mut g = grid_mouse_motion.lock().unwrap();
+            if g.is_selecting() {
                 let col = (x / char_w) as usize;
                 let row = (y / char_h) as usize + g.scrollback.len();
-                g.set_selection(start, (row, col));
+                g.update_selection(row, col);
                 drop(g);
-                let _ = tx_mouse2.send_blocking(());
+                let _ = tx_mouse_motion.send_blocking(());
             }
         });
 
