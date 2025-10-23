@@ -3,6 +3,10 @@ name = "hugovte"
 version = "0.1.0"
 edition = "2024"
 
+# [lib]
+# name = "hugovte"
+# path = "src/lib.rs"
+
 [dependencies]
 gtk4 = { version = "0.10.1", package = "gtk4" }#gdk4 = "0.10.1"
 cairo-rs = { version = "0.21.2", features = ["png"] }

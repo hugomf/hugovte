@@ -17,19 +17,7 @@ use crate::ansi::Color;
 
 // Declare the external C functions
 #[cfg(target_os = "macos")]
-unsafe extern "C" {
-    
-    fn set_opacity_and_blur(
-        gtk_window: *mut std::ffi::c_void,
-        opacity: f64,
-        blur_amount: f64,
-        red: f64, 
-        green: f64, 
-        blue: f64
-    ) -> i32;
-    
-    fn init_blur_api();
-}
+use hugovte::{init_blur_api, set_opacity_and_blur};
 
 fn hex_to_rgb(hex: &str) -> Option<(f64, f64, f64)> {
     let hex = hex.trim_start_matches('#');
