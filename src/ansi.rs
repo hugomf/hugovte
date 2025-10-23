@@ -1,12 +1,40 @@
 use std::fmt;
+use crate::constants::COLOR_PALETTE;
 
-/// Color in 0.0..=1.0 space
+/// Color in 0.0..=1.0 space with alpha channel
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Color { pub r: f64, pub g: f64, pub b: f64 }
-impl Default for Color { fn default() -> Self { Color { r: 1.0, g: 1.0, b: 1.0 } } }
+pub struct Color { 
+    pub r: f64, 
+    pub g: f64, 
+    pub b: f64,
+    pub a: f64,  // Add alpha channel
+}
+
+impl Default for Color { 
+    fn default() -> Self { 
+        Color { 
+            r: 1.0, 
+            g: 1.0, 
+            b: 1.0,
+            a: 1.0,  // Default: fully opaque
+        } 
+    } 
+}
+
 impl fmt::Display for Color {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "rgb({:.2}, {:.2}, {:.2})", self.r, self.g, self.b)
+        write!(f, "rgba({:.2}, {:.2}, {:.2}, {:.2})", self.r, self.g, self.b, self.a)
+    }
+}
+
+// Add convenience methods
+impl Color {
+    pub fn rgba(r: f64, g: f64, b: f64, a: f64) -> Self {
+        Self { r, g, b, a }
+    }
+    
+    pub fn rgb(r: f64, g: f64, b: f64) -> Self {
+        Self { r, g, b, a: 1.0 }
     }
 }
 
@@ -248,7 +276,7 @@ impl AnsiParser {
                                 let r = self.params[i + 2] as f64 / 255.0;
                                 let g = self.params[i + 3] as f64 / 255.0;
                                 let b = self.params[i + 4] as f64 / 255.0;
-                                let color = Color { r, g, b };
+                                let color = Color { r, g, b, a: 1.0 }; // Add alpha
                                 if self.params[i] == 38 {
                                     grid.set_fg(color);
                                 } else {
@@ -303,33 +331,13 @@ impl AnsiParser {
     }
 }
 
-// Color conversion functions
+// Color conversion functions - now using the palette
 fn ansi_color(index: u16) -> Color {
-    match index {
-        0 => Color { r: 0.0, g: 0.0, b: 0.0 },       // Black
-        1 => Color { r: 0.8, g: 0.0, b: 0.0 },       // Red
-        2 => Color { r: 0.0, g: 0.8, b: 0.0 },       // Green
-        3 => Color { r: 0.8, g: 0.8, b: 0.0 },       // Yellow
-        4 => Color { r: 0.0, g: 0.0, b: 0.8 },       // Blue
-        5 => Color { r: 0.8, g: 0.0, b: 0.8 },       // Magenta
-        6 => Color { r: 0.0, g: 0.8, b: 0.8 },       // Cyan
-        7 => Color { r: 0.8, g: 0.8, b: 0.8 },       // White
-        _ => Color::default(),
-    }
+    COLOR_PALETTE.get(index as usize).copied().unwrap_or_default()
 }
 
 fn ansi_bright_color(index: u16) -> Color {
-    match index {
-        0 => Color { r: 0.4, g: 0.4, b: 0.4 },       // Bright Black (Gray)
-        1 => Color { r: 1.0, g: 0.0, b: 0.0 },       // Bright Red
-        2 => Color { r: 0.0, g: 1.0, b: 0.0 },       // Bright Green
-        3 => Color { r: 1.0, g: 1.0, b: 0.0 },       // Bright Yellow
-        4 => Color { r: 0.0, g: 0.0, b: 1.0 },       // Bright Blue
-        5 => Color { r: 1.0, g: 0.0, b: 1.0 },       // Bright Magenta
-        6 => Color { r: 0.0, g: 1.0, b: 1.0 },       // Bright Cyan
-        7 => Color { r: 1.0, g: 1.0, b: 1.0 },       // Bright White
-        _ => Color::default(),
-    }
+    COLOR_PALETTE.get((index + 8) as usize).copied().unwrap_or_default()
 }
 
 fn ansi_256_color(index: u16) -> Color {
@@ -345,11 +353,12 @@ fn ansi_256_color(index: u16) -> Color {
                 r: r as f64 / 5.0,
                 g: g as f64 / 5.0,
                 b: b as f64 / 5.0,
+                a: 1.0, // Add alpha
             }
         }
         232..=255 => {
             let gray = (index - 232) as f64 / 23.0;
-            Color { r: gray, g: gray, b: gray }
+            Color { r: gray, g: gray, b: gray, a: 1.0 } // Add alpha
         }
         _ => Color::default(),
     }
@@ -359,37 +368,39 @@ fn ansi_256_color(index: u16) -> Color {
 mod tests {
     use super::*;
 
-    struct Mock {
+    struct MockGrid {
         fg: Color,
         bg: Color,
+        output: String,
     }
     
-    impl Mock {
+    impl MockGrid {
         fn new() -> Self {
             Self {
                 fg: Color::default(),
-                bg: Color { r: 0.0, g: 0.0, b: 0.0 },
+                bg: Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
+                output: String::new(),
             }
         }
     }
 
-    impl AnsiGrid for Mock {
-        fn put(&mut self, ch: char) { print!("{ch}"); }
+    impl AnsiGrid for MockGrid {
+        fn put(&mut self, ch: char) { self.output.push(ch); }
         fn advance(&mut self) {}
         fn left(&mut self, _: usize) {}
         fn right(&mut self, _: usize) {}
         fn up(&mut self, _: usize) {}
         fn down(&mut self, _: usize) {}
-        fn newline(&mut self) { println!(); }
+        fn newline(&mut self) { self.output.push('\n'); }
         fn carriage_return(&mut self) {}
         fn backspace(&mut self) {}
         fn move_rel(&mut self, _: i32, _: i32) {}
         fn move_abs(&mut self, _: usize, _: usize) {}
-        fn clear_screen(&mut self) {}
-        fn clear_line(&mut self) {}
+        fn clear_screen(&mut self) { self.output.push_str("[CLEAR]"); }
+        fn clear_line(&mut self) { self.output.push_str("[CLEAR_LINE]"); }
         fn reset_attrs(&mut self) {
             self.fg = Color::default();
-            self.bg = Color { r: 0.0, g: 0.0, b: 0.0 };
+            self.bg = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
         }
         fn set_bold(&mut self, _: bool) {}
         fn set_italic(&mut self, _: bool) {}
@@ -397,30 +408,39 @@ mod tests {
         fn set_dim(&mut self, _: bool) {}
         fn set_fg(&mut self, c: Color) { 
             self.fg = c;
-            println!("[FG {c}]"); 
         }
         fn set_bg(&mut self, c: Color) { 
             self.bg = c;
-            println!("[BG {c}]"); 
         }
-        fn set_title(&mut self, t: &str) { println!("[TITLE {t}]"); }
+        fn set_title(&mut self, t: &str) { self.output.push_str(&format!("[TITLE: {}]", t)); }
         fn get_fg(&self) -> Color { self.fg }
         fn get_bg(&self) -> Color { self.bg }
     }
 
     #[test]
     fn test_basic_parsing() {
-        let mut p = AnsiParser::new();
-        let mut m = Mock::new();
+        let mut parser = AnsiParser::new();
+        let mut grid = MockGrid::new();
         let data = b"Hello World\n";
-        for &b in data { p.process(b, &mut m); }
+        for &b in data { parser.process(b, &mut grid); }
+        assert_eq!(grid.output, "Hello World\n");
     }
 
     #[test]
     fn test_colors() {
-        let mut p = AnsiParser::new();
-        let mut m = Mock::new();
+        let mut parser = AnsiParser::new();
+        let mut grid = MockGrid::new();
         let data = b"\x1B[31mRed\x1B[0m";
-        for &b in data { p.process(b, &mut m); }
+        for &b in data { parser.process(b, &mut grid); }
+        assert_eq!(grid.fg, COLOR_PALETTE[1]); // Should be red
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut parser = AnsiParser::new();
+        let mut grid = MockGrid::new();
+        let data = b"\x1B[2;5H"; // Move to row 2, column 5
+        for &b in data { parser.process(b, &mut grid); }
+        // Note: MockGrid doesn't track cursor position, so we just test that it doesn't panic
     }
 }
