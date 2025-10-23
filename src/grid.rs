@@ -273,6 +273,9 @@ impl AnsiGrid for Grid {
     fn backspace(&mut self) {
         if self.col > 0 {
             self.col -= 1;
+            // Clear the character at the new cursor position
+            let cell = self.get_cell_mut(self.row, self.col);
+            *cell = Self::default_cell();  // This erases the character!
         }
     }
 
