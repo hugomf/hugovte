@@ -100,9 +100,13 @@ impl InputHandler {
         let t = tx.clone();
         let motion = EventControllerMotion::new();
         motion.connect_motion(move |_, x, y| {
+            // Read scrollback info first without holding write lock
+            let scrollback_rows = g.read().map(|gr| gr.scrollback.len() / gr.cols).unwrap_or(0);
+            let r = (y / char_h) as usize + scrollback_rows;
+            let c = (x / char_w) as usize;
+
             g.write().map(|mut gr| {
                 if gr.is_selecting() {
-                    let (r, c) = Self::xy_to_cell(x, y, char_w, char_h, &g);
                     gr.update_selection(r, c);
                     let _ = t.send_blocking(());
                 }
