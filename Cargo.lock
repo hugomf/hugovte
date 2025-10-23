@@ -624,6 +624,7 @@ dependencies = [
  "glib",
  "gtk4",
  "libloading",
+ "memchr",
  "objc2",
  "objc2-app-kit",
  "pango",
