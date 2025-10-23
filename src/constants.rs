@@ -2,8 +2,12 @@
 use crate::ansi::Color;
 
 // Display constants
-pub const DEFAULT_FONT_SIZE: f64 = 14.0;
-pub const DEFAULT_FONT_FAMILY: &str = "Monospace";
+// pub const DEFAULT_FONT_SIZE: f64 = 14.0;
+// pub const DEFAULT_FONT_FAMILY: &str = "Monospace";
+
+pub const DEFAULT_FONT_SIZE: f64 = 12.0;
+pub const DEFAULT_FONT_FAMILY: &str = "MenloLGS NF";
+
 pub const SCROLLBACK_LIMIT: usize = 1000;
 pub const TAB_WIDTH: usize = 4;
 

@@ -1,7 +1,6 @@
-use std::collections::HashMap;
-
 // src/drawing.rs
-use cairo::{Context, FontSlant, FontWeight, ScaledFont, ImageSurface, Format};
+use std::collections::HashMap;
+use cairo::{Context, FontSlant, FontWeight, ScaledFont, ImageSurface, Format, Antialias, HintStyle, HintMetrics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FontKey {
@@ -9,10 +8,8 @@ struct FontKey {
     weight: FontWeight,
 }
 
-// Manual Hash implementation since FontSlant and FontWeight don't implement Hash
 impl std::hash::Hash for FontKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Convert enums to their discriminant values for hashing
         std::mem::discriminant(&self.slant).hash(state);
         std::mem::discriminant(&self.weight).hash(state);
     }
@@ -32,7 +29,7 @@ impl DrawingCache {
         let surf = ImageSurface::create(Format::ARgb32, 1, 1)?;
         let cr = Context::new(&surf)?;
         
-        // Pre-create scaled fonts for common combinations
+        // Pre-create scaled fonts for common combinations with better rendering
         let mut fonts = HashMap::new();
         
         let combinations = [
@@ -73,11 +70,22 @@ impl DrawingCache {
         cr.select_font_face(family, slant, weight);
         cr.set_font_size(size);
         
-        // Create scaled font using the context's current font settings
         let font_face = cr.font_face().clone();
         let font_matrix = cr.font_matrix();
         let ctm = cr.matrix();
-        let options = cairo::FontOptions::new().map_err(|_| cairo::Error::FontTypeMismatch)?;
+        
+        // ⭐ IMPROVED: Better font rendering options
+        let mut options = cairo::FontOptions::new()
+            .map_err(|_| cairo::Error::FontTypeMismatch)?;
+        
+        // Best antialiasing - subpixel for LCD screens
+        options.set_antialias(Antialias::Subpixel);
+        
+        // Slight hinting for sharper text without distortion
+        options.set_hint_style(HintStyle::Slight);
+        
+        // Enable metric hinting for better alignment
+        options.set_hint_metrics(HintMetrics::On);
         
         ScaledFont::new(&font_face, &font_matrix, &ctm, &options)
     }
@@ -109,7 +117,6 @@ impl DrawingCache {
 
 impl Clone for DrawingCache {
     fn clone(&self) -> Self {
-        // Recreate the drawing cache - this is a bit expensive but necessary
         DrawingCache::new(&self.font_family, self.font_size)
             .expect("Failed to clone DrawingCache")
     }
