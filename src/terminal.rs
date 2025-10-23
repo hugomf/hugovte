@@ -240,18 +240,51 @@ impl VteTerminal {
                 eprintln!("DEBUG: Config in draw function - grid_lines: {}, alpha: {:.2}", config.draw_grid_lines, config.grid_line_alpha);
             }
 
+            // Calculate scrolling parameters
+            let scrollback_rows = g.scrollback.len() / g.cols;
+            let total_lines = scrollback_rows + g.rows;
+            let start_visible_absolute = if total_lines > g.rows {
+                total_lines - g.rows - g.scroll_offset.min(scrollback_rows)
+            } else {
+                0
+            };
+
+            let default_cell = crate::ansi::Cell {
+                ch: '\0',
+                fg: config.default_fg,
+                bg: config.default_bg,
+                bold: false,
+                italic: false,
+                underline: false,
+                dim: false,
+            };
+
             // Draw cells with proper font metrics
             for r in 0..g.rows.min(rows) {
                 let mut current_x = 0.0; // Track actual X position for this row
+                let absolute_r = start_visible_absolute + r;
                 for c in 0..g.cols.min(cols) {
-                    let cell = g.get_cell(r, c);
+                    let cell = if absolute_r >= scrollback_rows {
+                        let grid_r = absolute_r - scrollback_rows;
+                        if grid_r < g.rows {
+                            g.get_cell(grid_r, c)
+                        } else {
+                            &default_cell
+                        }
+                    } else {
+                        if absolute_r >= 0 && absolute_r < scrollback_rows {
+                            &g.scrollback[absolute_r * g.cols + c]
+                        } else {
+                            &default_cell
+                        }
+                    };
                     let y = r as f64 * char_h;
 
                     // Use cell position for background and grid, but character positioning uses font metrics
                     let cell_x = c as f64 * char_w;
 
                     // Background (with selection highlight)
-                    if g.is_selected(r + g.scrollback.len() / g.cols, c) {
+                    if g.is_selected(absolute_r, c) {
                         cr.set_source_rgba(SELECTION_BG.r, SELECTION_BG.g, SELECTION_BG.b, SELECTION_BG.a);
                         cr.rectangle(cell_x, y, char_w, char_h);
                         cr.fill().unwrap();
@@ -329,8 +362,8 @@ impl VteTerminal {
                 }
             }
 
-            // Draw cursor
-            if g.row < g.rows && g.col < g.cols && g.is_cursor_visible() {
+            // Draw cursor (only when not scrolled, as cursor position is relative to grid)
+            if g.row < g.rows && g.col < g.cols && g.is_cursor_visible() && g.scroll_offset == 0 {
                 let cursor_x = g.col as f64 * char_w;
                 let cursor_y = g.row as f64 * char_h;
                 let cursor_cell = g.get_cell(g.row, g.col);

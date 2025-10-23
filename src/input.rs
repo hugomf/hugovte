@@ -28,6 +28,11 @@ impl InputHandler {
                 return Propagation::Stop;
             }
 
+            // keyboard scrolling (Shift + Page/Arrow keys)
+            if state.contains(gdk::ModifierType::SHIFT_MASK) && Self::handle_scroll_keys(keyval, &grid, &tx) {
+                return Propagation::Stop;
+            }
+
             // escape
             if keyval == gdk::Key::Escape {
                 Self::handle_escape(&grid, &tx);
@@ -100,10 +105,7 @@ impl InputHandler {
         let t = tx.clone();
         let motion = EventControllerMotion::new();
         motion.connect_motion(move |_, x, y| {
-            // Read scrollback info first without holding write lock
-            let scrollback_rows = g.read().map(|gr| gr.scrollback.len() / gr.cols).unwrap_or(0);
-            let r = (y / char_h) as usize + scrollback_rows;
-            let c = (x / char_w) as usize;
+            let (r, c) = Self::xy_to_cell(x, y, char_w, char_h, &g);
 
             g.write().map(|mut gr| {
                 if gr.is_selecting() {
@@ -141,7 +143,13 @@ impl InputHandler {
     fn xy_to_cell(x: f64, y: f64, cw: f64, ch: f64, grid: &Arc<RwLock<Grid>>) -> (usize, usize) {
         let gr = grid.read().unwrap();
         let c = (x / cw) as usize;
-        let r = (y / ch) as usize + gr.scrollback.len() / gr.cols;
+        let screen_r = (y / ch) as usize;
+        let scrollback_rows = gr.scrollback.len() / gr.cols;
+        let r = if gr.scroll_offset == 0 {
+            scrollback_rows + screen_r
+        } else {
+            scrollback_rows - gr.scroll_offset + screen_r
+        };
         (r, c)
     }
 
@@ -153,6 +161,30 @@ impl InputHandler {
     fn handle_escape(grid: &Arc<RwLock<Grid>>, tx: &async_channel::Sender<()>) {
         grid.write().map(|mut g| g.clear_selection()).ok();
         let _ = tx.send_blocking(());
+    }
+
+    fn handle_scroll_keys(keyval: gdk::Key, grid: &Arc<RwLock<Grid>>, tx: &async_channel::Sender<()>) -> bool {
+        use gdk::Key;
+        let lines = match keyval {
+            Key::Page_Up => 10,
+            Key::Page_Down => -10,
+            Key::Up => 1,
+            Key::Down => -1,
+            _ => return false,
+        };
+
+        grid.write().map(|mut gr| {
+            let new_offset = if lines > 0 {
+                gr.scroll_offset.saturating_sub(lines as usize)
+            } else {
+                let max = (gr.scrollback.len() / gr.cols).max(gr.scroll_offset);
+                gr.scroll_offset + (-lines as usize).min(max - gr.scroll_offset)
+            };
+            gr.scroll_offset = new_offset;
+        }).ok();
+
+        let _ = tx.send_blocking(());
+        true
     }
 
     fn handle_copy_paste(

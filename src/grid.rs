@@ -258,6 +258,7 @@ impl AnsiGrid for Grid {
             }
             
             self.row = self.rows - 1;
+            self.scroll_offset = 0; // Auto-scroll to bottom on new output
             
             // Limit scrollback
             if self.scrollback.len() > crate::constants::SCROLLBACK_LIMIT * self.cols {
