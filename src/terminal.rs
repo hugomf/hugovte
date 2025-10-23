@@ -29,6 +29,8 @@ impl VteTerminal {
     }
 
     pub fn with_config(config: TerminalConfig) -> Self {
+        eprintln!("INFO: Creating new VteTerminal with config: grid_lines={}, grid_alpha={:.2}",
+                 config.draw_grid_lines, config.grid_line_alpha);
         let area = DrawingArea::new();
         area.set_focusable(true);
         area.grab_focus();
@@ -92,13 +94,17 @@ impl VteTerminal {
         }
         let _ = tx.send_blocking(());
 
+        // Clone config for drawing function to avoid move issues
+        let drawing_config = config.clone();
+        eprintln!("DEBUG: About to pass config to drawing function - grid_lines: {}", drawing_config.draw_grid_lines);
+
         // Setup drawing
         Self::setup_drawing(
             &area,
             Arc::clone(&grid),
             Arc::clone(&pty_pair),
             drawing_cache.clone(),
-            config.clone(),
+            drawing_config,  // Pass cloned config to drawing function
             char_w,
             char_h,
             ascent,
@@ -106,7 +112,7 @@ impl VteTerminal {
 
         // Setup input handlers
         InputHandler::setup_keyboard(&area, Arc::clone(&grid), Arc::clone(&writer_arc), tx.clone());
-        
+
         if config.enable_selection {
             InputHandler::setup_mouse(&area, Arc::clone(&grid), tx.clone(), char_w, char_h);
         }
@@ -135,6 +141,9 @@ impl VteTerminal {
 
         let mut cmd = CommandBuilder::new("bash");
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        cmd.env("CLICOLOR", "1");
+        cmd.env("LSCOLORS", "ExGxFxdxCxDxDxBxBxExEx");
         
         let _child = pair.slave.spawn_command(cmd).expect("Failed to spawn shell");
         
@@ -197,6 +206,7 @@ impl VteTerminal {
         char_h: f64,
         ascent: f64,
     ) {
+        eprintln!("DEBUG: setup_drawing received config - grid_lines: {}", config.draw_grid_lines);
         area.set_draw_func(move |area, cr, _w, _h| {
             // CRITICAL: Do NOT clear or paint - preserves transparency
             
@@ -224,26 +234,73 @@ impl VteTerminal {
 
             let g = grid.read().unwrap();
 
-            // Draw cells
+            // Log when drawing starts (only first time to avoid spam)
+            if cfg!(debug_assertions) {
+                eprintln!("INFO: Starting to draw {}x{} grid", cols, rows);
+                eprintln!("DEBUG: Config in draw function - grid_lines: {}, alpha: {:.2}", config.draw_grid_lines, config.grid_line_alpha);
+            }
+
+            // Draw cells with proper font metrics
             for r in 0..g.rows.min(rows) {
+                let mut current_x = 0.0; // Track actual X position for this row
                 for c in 0..g.cols.min(cols) {
                     let cell = g.get_cell(r, c);
-                    let x = c as f64 * char_w;
                     let y = r as f64 * char_h;
+
+                    // Use cell position for background and grid, but character positioning uses font metrics
+                    let cell_x = c as f64 * char_w;
 
                     // Background (with selection highlight)
                     if g.is_selected(r + g.scrollback.len() / g.cols, c) {
                         cr.set_source_rgba(SELECTION_BG.r, SELECTION_BG.g, SELECTION_BG.b, SELECTION_BG.a);
-                        cr.rectangle(x, y, char_w, char_h);
+                        cr.rectangle(cell_x, y, char_w, char_h);
                         cr.fill().unwrap();
                     } else if cell.bg.a > 0.01 {
                         // Only draw background if it has opacity
                         cr.set_source_rgba(cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a);
-                        cr.rectangle(x, y, char_w, char_h);
+                        cr.rectangle(cell_x, y, char_w, char_h);
                         cr.fill().unwrap();
                     }
 
-                    // Grid lines (optional)
+                    // Text
+                    if cell.ch != '\0' && cell.ch != ' ' {
+                        cr.set_source_rgb(cell.fg.r, cell.fg.g, cell.fg.b);
+
+                        let slant = if cell.italic { FontSlant::Italic } else { FontSlant::Normal };
+                        let weight = if cell.bold { FontWeight::Bold } else { FontWeight::Normal };
+
+                        if let Some(font) = drawing_cache.get_font(slant, weight) {
+                            cr.set_scaled_font(font);
+
+                            // Use actual font metrics for character positioning
+                            let text = &cell.ch.to_string();
+
+                            // For monospace fonts, use left alignment within each cell
+                            // This gives proper terminal-like character spacing
+                            let pos_x = cell_x;
+
+                            // Debug output for character spacing analysis (first few chars only)
+                            if cfg!(debug_assertions) && c < 3 && r < 5 {
+                                let char_advance = drawing_cache.get_char_advance(cell.ch);
+                                eprintln!("DEBUG: Char '{}' at pos: {:.2}, advance: {:.2}, cell: {:.2}",
+                                    cell.ch, pos_x, char_advance, char_w);
+                            }
+
+                            cr.move_to(pos_x, y + ascent);
+                            cr.show_text(text).unwrap();
+                        }
+                    }
+
+                    // Underline
+                    if cell.underline {
+                        cr.set_source_rgb(cell.fg.r, cell.fg.g, cell.fg.b);
+                        cr.move_to(cell_x, y + char_h - 1.0);
+                        cr.line_to(cell_x + char_w, y + char_h - 1.0);
+                        cr.set_line_width(1.0);
+                        cr.stroke().unwrap();
+                    }
+
+                    // Grid lines (optional) - drawn last so they appear on top
                     if config.draw_grid_lines {
                         cr.set_source_rgba(
                             GRID_LINE_COLOR.r,
@@ -251,32 +308,23 @@ impl VteTerminal {
                             GRID_LINE_COLOR.b,
                             config.grid_line_alpha,
                         );
-                        cr.set_line_width(0.2);
-                        cr.rectangle(x, y, char_w, char_h);
-                        cr.stroke().unwrap();
-                    }
-
-                    // Text
-                    if cell.ch != '\0' && cell.ch != ' ' {
-                        cr.set_source_rgb(cell.fg.r, cell.fg.g, cell.fg.b);
-                        
-                        let slant = if cell.italic { FontSlant::Italic } else { FontSlant::Normal };
-                        let weight = if cell.bold { FontWeight::Bold } else { FontWeight::Normal };
-                        
-                        if let Some(font) = drawing_cache.get_font(slant, weight) {
-                            cr.set_scaled_font(font);
-                            cr.move_to(x, y + ascent);
-                            cr.show_text(&cell.ch.to_string()).unwrap();
-                        }
-                    }
-
-                    // Underline
-                    if cell.underline {
-                        cr.set_source_rgb(cell.fg.r, cell.fg.g, cell.fg.b);
-                        cr.move_to(x, y + char_h - 1.0);
-                        cr.line_to(x + char_w, y + char_h - 1.0);
                         cr.set_line_width(1.0);
+
+                        // Draw vertical lines
+                        cr.move_to(cell_x + char_w, y);
+                        cr.line_to(cell_x + char_w, y + char_h);
+
+                        // Draw horizontal lines
+                        cr.move_to(cell_x, y + char_h);
+                        cr.line_to(cell_x + char_w, y + char_h);
+
                         cr.stroke().unwrap();
+
+                        // Always log first grid line to verify drawing
+                        if r == 0 && c == 0 {
+                            eprintln!("GRID: Drawing grid line at cell (0,0) - enabled: {}, pos: ({:.1}, {:.1}) to ({:.1}, {:.1})",
+                                config.draw_grid_lines, cell_x + char_w, y, cell_x + char_w, y + char_h);
+                        }
                     }
                 }
             }
@@ -302,11 +350,18 @@ impl VteTerminal {
                     cr.set_source_rgb(cursor_cell.fg.r, cursor_cell.fg.g, cursor_cell.fg.b);
                     let slant = if cursor_cell.italic { FontSlant::Italic } else { FontSlant::Normal };
                     let weight = if cursor_cell.bold { FontWeight::Bold } else { FontWeight::Normal };
-                    
+
                     if let Some(font) = drawing_cache.get_font(slant, weight) {
                         cr.set_scaled_font(font);
-                        cr.move_to(cursor_x, cursor_y + ascent);
-                        cr.show_text(&cursor_cell.ch.to_string()).unwrap();
+
+                        // Left-align cursor character within its cell for consistent spacing
+                        let text = &cursor_cell.ch.to_string();
+
+                        // Position cursor character at the left edge of its cell
+                        let pos_x = cursor_x;
+
+                        cr.move_to(pos_x, cursor_y + ascent);
+                        cr.show_text(text).unwrap();
                     }
                 }
             }

@@ -5,8 +5,8 @@ use crate::ansi::Color;
 // pub const DEFAULT_FONT_SIZE: f64 = 14.0;
 // pub const DEFAULT_FONT_FAMILY: &str = "Monospace";
 
-pub const DEFAULT_FONT_SIZE: f64 = 12.0;
-pub const DEFAULT_FONT_FAMILY: &str = "MenloLGS NF";
+pub const DEFAULT_FONT_SIZE: f64 = 13.0;
+pub const DEFAULT_FONT_FAMILY: &str = "Monaco";
 
 pub const SCROLLBACK_LIMIT: usize = 1000;
 pub const TAB_WIDTH: usize = 4;
@@ -19,7 +19,7 @@ pub const CLICK_TIMEOUT_MS: u128 = 200;
 pub const DEFAULT_FG: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 pub const DEFAULT_BG: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }; // Fully transparent by default
 pub const SELECTION_BG: Color = Color { r: 0.3, g: 0.5, b: 0.8, a: 0.7 }; // Semi-transparent selection
-pub const GRID_LINE_COLOR: Color = Color { r: 0.2, g: 0.0, b: 0.0, a: 0.3 };
+pub const GRID_LINE_COLOR: Color = Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
 
 // 16-color ANSI palette
 pub const COLOR_PALETTE: [Color; 16] = [

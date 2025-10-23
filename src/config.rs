@@ -30,8 +30,8 @@ impl Default for TerminalConfig {
             default_bg: DEFAULT_BG,
             enable_cursor_blink: true,
             enable_selection: true,
-            draw_grid_lines: true,
-            grid_line_alpha: 0.3,
+            draw_grid_lines: false,
+            grid_line_alpha: 0.8,
         }
     }
 }

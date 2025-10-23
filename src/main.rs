@@ -56,7 +56,7 @@ fn main() {
         let config = TerminalConfig::default()
             .with_background_color(Color::rgba(0.0, 0.0, 0.0, 0.0)) // Fully transparent
             .with_foreground_color(Color::rgb(1.0, 1.0, 1.0))
-            .with_grid_lines(false);
+            .with_grid_lines(false);  // Enable grid lines
 
         // Main window
         let window = ApplicationWindow::builder()
@@ -91,8 +91,8 @@ fn main() {
                 init_blur_api();
             }
 
-            let opacity = 0.5;     // 0.0 = fully transparent, 1.0 = fully opaque
-            let blur_amount = 0.2;  // 0.0 = no blur, 1.0 = maximum blur
+            let opacity = 0.4;     // 0.0 = fully transparent, 1.0 = fully opaque
+            let blur_amount = 0.1;  // 0.0 = no blur, 1.0 = maximum blur
             let tint_color = "#1e1e1e";
             println!("🎨 Setting opacity: {}, blur: {}", opacity, blur_amount);
 
