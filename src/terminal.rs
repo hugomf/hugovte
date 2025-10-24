@@ -374,8 +374,12 @@ impl VteTerminal {
                     1.0 - cursor_cell.bg.g,
                     1.0 - cursor_cell.bg.b,
                 );
-                cr.rectangle(cursor_x, cursor_y, char_w, char_h);
-                cr.set_line_width(2.0);
+                let gap_left = 1.5;
+                let gap_top = 0.25;
+                let gap_right = 0.25;
+                let gap_bottom = 0.0;
+                cr.rectangle(cursor_x + gap_left, cursor_y + gap_top, char_w - gap_left - gap_right, char_h - gap_top - gap_bottom);
+                cr.set_line_width(1.0);
                 cr.stroke().unwrap();
 
                 // Draw cursor cell content

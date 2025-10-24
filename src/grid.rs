@@ -272,11 +272,10 @@ impl AnsiGrid for Grid {
     }
     
     fn backspace(&mut self) {
+        // Just move cursor left - don't erase
+        // Bash will send \x1B[K to clear if needed
         if self.col > 0 {
             self.col -= 1;
-            // Clear the character at the new cursor position
-            let cell = self.get_cell_mut(self.row, self.col);
-            *cell = Self::default_cell();  // This erases the character!
         }
     }
 
@@ -301,6 +300,45 @@ impl AnsiGrid for Grid {
         let start_idx = self.row * self.cols;
         for i in 0..self.cols {
             self.cells[start_idx + i] = default;
+        }
+    }
+
+    fn clear_line_right(&mut self) {
+        let default = Self::default_cell();
+        let start_idx = self.row * self.cols + self.col;
+        let end_idx = (self.row + 1) * self.cols;
+        for i in start_idx..end_idx {
+            self.cells[i] = default;
+        }
+    }
+
+    fn clear_line_left(&mut self) {
+        let default = Self::default_cell();
+        let start_idx = self.row * self.cols;
+        let end_idx = self.row * self.cols + self.col + 1;
+        for i in start_idx..end_idx {
+            self.cells[i] = default;
+        }
+    }
+
+    fn clear_screen_down(&mut self) {
+        // Clear from cursor to end of screen
+        self.clear_line_right();
+        let default = Self::default_cell();
+        let start_idx = (self.row + 1) * self.cols;
+        let end_idx = self.rows * self.cols;
+        for i in start_idx..end_idx {
+            self.cells[i] = default;
+        }
+    }
+
+    fn clear_screen_up(&mut self) {
+        // Clear from top of screen to cursor
+        self.clear_line_left();
+        let default = Self::default_cell();
+        let end_idx = self.row * self.cols;
+        for i in 0..end_idx {
+            self.cells[i] = default;
         }
     }
 
