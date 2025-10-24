@@ -172,18 +172,28 @@ impl VteTerminal {
         tx: async_channel::Sender<()>,
     ) {
         thread::spawn(move || {
-            let mut parser = AnsiParser::new();
+            let mut parser = AnsiParser::new().with_error_callback(|err| {
+                eprintln!("ANSI parser error: {}", err);
+            });
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if let Ok(mut g) = grid.write() {
-                            for &b in &buf[..n] {
-                                parser.process(b, &mut *g);
+                        let acquire_lock = grid.write();
+                        match acquire_lock {
+                            Ok(mut g) => {
+                                let s = String::from_utf8_lossy(&buf[..n]);
+                                parser.feed_str(&s, &mut *g);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to acquire grid write lock: {}", e);
+                                continue;
                             }
                         }
-                        let _ = tx.send_blocking(());
+                        if let Err(e) = tx.send_blocking(()) {
+                            eprintln!("Failed to send redraw signal: {}", e);
+                        }
                     }
                     Err(e) => {
                         eprintln!("PTY read error: {}", e);
@@ -220,12 +230,14 @@ impl VteTerminal {
                         g.resize(cols, rows);
                         if let Ok(pair_guard) = pty_pair.read() {
                             if let Some(ref pair) = *pair_guard {
-                                let _ = pair.master.resize(PtySize {
+                                if let Err(e) = pair.master.resize(PtySize {
                                     rows: rows as u16,
                                     cols: cols as u16,
                                     pixel_width: 0,
                                     pixel_height: 0,
-                                });
+                                }) {
+                                    eprintln!("Failed to resize PTY: {}", e);
+                                }
                             }
                         }
                     }
@@ -261,7 +273,6 @@ impl VteTerminal {
 
             // Draw cells with proper font metrics
             for r in 0..g.rows.min(rows) {
-                let mut current_x = 0.0; // Track actual X position for this row
                 let absolute_r = start_visible_absolute + r;
                 for c in 0..g.cols.min(cols) {
                     let cell = if absolute_r >= scrollback_rows {
@@ -272,7 +283,7 @@ impl VteTerminal {
                             &default_cell
                         }
                     } else {
-                        if absolute_r >= 0 && absolute_r < scrollback_rows {
+                        if absolute_r < scrollback_rows {
                             &g.scrollback[absolute_r * g.cols + c]
                         } else {
                             &default_cell

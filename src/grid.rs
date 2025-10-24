@@ -22,6 +22,13 @@ pub struct Grid {
     pub selection: Selection,
     // Cursor blink state
     cursor_visible: bool,
+    // Cursor stack for save/restore
+    cursor_stack: Vec<(usize, usize)>,
+    // Terminal modes
+    insert_mode: bool,
+    auto_wrap: bool,
+    // Terminal title
+    title: String,
 }
 
 impl Grid {
@@ -56,6 +63,10 @@ impl Grid {
             dim: false,
             selection: Selection::new(),
             cursor_visible: true,
+            cursor_stack: Vec::new(),
+            insert_mode: false,
+            auto_wrap: true,
+            title: String::new(),
         }
     }
 
@@ -194,14 +205,18 @@ impl Grid {
 impl AnsiGrid for Grid {
     fn put(&mut self, ch: char) {
         if self.col < self.cols && self.row < self.rows {
-            // Store attributes before borrowing self mutably
+            if self.insert_mode {
+                self.insert_chars(1);
+            }
+
+            // Store attributes
             let fg = self.fg;
             let bg = self.bg;
             let bold = self.bold;
             let italic = self.italic;
             let underline = self.underline;
             let dim = self.dim;
-            
+
             let cell = self.get_cell_mut(self.row, self.col);
             *cell = Cell {
                 ch,
@@ -217,8 +232,10 @@ impl AnsiGrid for Grid {
 
     fn advance(&mut self) {
         self.col += 1;
-        if self.col >= self.cols {
+        if self.auto_wrap && self.col >= self.cols {
             self.newline();
+        } else {
+            self.col = self.col.min(self.cols - 1);
         }
     }
 
@@ -381,5 +398,181 @@ impl AnsiGrid for Grid {
     
     fn get_bg(&self) -> Color {
         self.bg
+    }
+
+    fn save_cursor(&mut self) {
+        self.cursor_stack.push((self.row, self.col));
+    }
+
+    fn restore_cursor(&mut self) {
+        if let Some((row, col)) = self.cursor_stack.pop() {
+            self.row = row;
+            self.col = col;
+        }
+    }
+
+    fn set_cursor_visible(&mut self, visible: bool) {
+        self.cursor_visible = visible;
+    }
+
+    fn scroll_up(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if n >= self.rows {
+            self.clear_screen();
+            return;
+        }
+
+        // Move content up by n rows
+        for r in 0..(self.rows - n) {
+            let src_start = (r + n) * self.cols;
+            let dst_start = r * self.cols;
+            self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+        }
+
+        // Clear bottom n rows
+        for r in (self.rows - n)..self.rows {
+            for c in 0..self.cols {
+                let idx = r * self.cols + c;
+                self.cells[idx] = Self::default_cell();
+            }
+        }
+    }
+
+    fn scroll_down(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if n >= self.rows {
+            self.clear_screen();
+            return;
+        }
+
+        // Move content down by n rows
+        for r in (0..(self.rows - n)).rev() {
+            let dst_start = (r + n) * self.cols;
+            let src_start = r * self.cols;
+            self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+        }
+
+        // Clear top n rows
+        for r in 0..n {
+            for c in 0..self.cols {
+                let idx = r * self.cols + c;
+                self.cells[idx] = Self::default_cell();
+            }
+        }
+    }
+
+    fn insert_lines(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let n_clamped = n.min(self.rows - self.row);
+
+        // Shift rows below current row down by n_clamped
+        let start_row = self.row;
+        let end_row = self.rows - n_clamped;
+        for r in (start_row..end_row).rev() {
+            let dst_start = (r + n_clamped) * self.cols;
+            let src_start = r * self.cols;
+            self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+        }
+
+        // Clear inserted rows
+        for r in start_row..(start_row + n_clamped) {
+            for c in 0..self.cols {
+                let idx = r * self.cols + c;
+                self.cells[idx] = Self::default_cell();
+            }
+        }
+    }
+
+    fn delete_lines(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let n_clamped = n.min(self.rows - self.row);
+
+        // Shift rows up by n_clamped
+        let start_row = self.row;
+        let end_row = self.rows;
+        for r in start_row..end_row {
+            if r + n_clamped < self.rows {
+                let dst_start = r * self.cols;
+                let src_start = (r + n_clamped) * self.cols;
+                self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+            } else {
+                // Clear row
+                for c in 0..self.cols {
+                    let idx = r * self.cols + c;
+                    self.cells[idx] = Self::default_cell();
+                }
+            }
+        }
+    }
+
+    fn insert_chars(&mut self, n: usize) {
+        if n == 0 || self.col >= self.cols {
+            return;
+        }
+        let n_clamped = n.min(self.cols - self.col);
+        let row_start = self.row * self.cols;
+        let end_col = self.cols - n_clamped;
+
+        // Shift right from cursor to end of row
+        for idx in (row_start + self.col..row_start + end_col).rev() {
+            self.cells[idx + n_clamped] = self.cells[idx];
+        }
+
+        // Clear inserted chars
+        for idx in row_start + self.col..row_start + self.col + n_clamped {
+            self.cells[idx] = Self::default_cell();
+        }
+    }
+
+    fn delete_chars(&mut self, n: usize) {
+        if n == 0 || self.col >= self.cols {
+            return;
+        }
+        let n_clamped = n.min(self.cols - self.col);
+        let row_start = self.row * self.cols;
+        let end_col = self.cols - n_clamped;
+
+        // Shift left to cursor position
+        for idx in self.col..end_col {
+            let src = row_start + idx + n_clamped;
+            let dst = row_start + idx;
+            self.cells[dst] = self.cells[src];
+        }
+
+        // Clear end of line
+        for idx in row_start + end_col..row_start + self.cols {
+            self.cells[idx] = Self::default_cell();
+        }
+    }
+
+    fn erase_chars(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let row_start = self.row * self.cols;
+        let end_idx = (self.col + n).min(self.cols);
+        for idx in row_start + self.col..row_start + end_idx {
+            self.cells[idx] = Self::default_cell();
+        }
+    }
+
+    fn set_insert_mode(&mut self, enable: bool) {
+        self.insert_mode = enable;
+    }
+
+    fn set_auto_wrap(&mut self, enable: bool) {
+        self.auto_wrap = enable;
+    }
+
+    fn set_title(&mut self, title: &str) {
+        self.title = title.to_string();
     }
 }
