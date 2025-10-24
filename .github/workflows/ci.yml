@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust: stable
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            rust: stable-msvc
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            rust: stable
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            rust: beta
+            target: x86_64-unknown-linux-gnu
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust (${{ matrix.rust }})
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        targets: ${{ matrix.target }}
+
+    - name: Cache Cargo registry
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Install cargo-nextest (Linux/macOS)
+      if: runner.os != 'Windows'
+      run: curl -LsSf https://get.nexte.st/latest | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+
+    - name: Install cargo-nextest (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        curl -LsSf https://get.nexte.st/latest/windows | tar zxf - -C %USERPROFILE%\.cargo\bin
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Check documentation
+      run: cargo doc --workspace --no-deps
+
+    - name: Build
+      run: cargo build --workspace
+
+    - name: Run tests
+      run: cargo nextest run --workspace --all-targets
+
+    - name: Run clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    - name: Run fuzz tests for 10 seconds (Linux only)
+      if: runner.os == 'Linux'
+      run: |
+        cd crates/vte-ansi
+        if [ -d fuzz ]; then
+          cargo fuzz run parser_basic -- -max_total_time=10
+          cargo fuzz run parser_sgr -- -max_total_time=10
+        fi
+
+  benches:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache Cargo registry
+      uses: actions/cache@v3
+      with:
+        path: ~/.cargo/registry
+        key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run benchmarks (vte-ansi only)
+      run: cd crates/vte-ansi && cargo bench -- --save-baseline main
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit
+
+  publish-check:
+    name: Publish check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check if vte-ansi can be published
+      run: |
+        cd crates/vte-ansi
+        cargo package --allow-dirty
+        cargo publish --dry-run

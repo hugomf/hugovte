@@ -40,7 +40,8 @@ naming_conventions:
   network_models: "suffix with Network"  # NetworkUser
 
 # 5. Code rules
-- Never commit or push any code with compilation errors.
+- Never commit or push any code with compilation errors (run cargo check).
+- Make sure the examples compile.
 - Before git commit we should run the test cases (run ./test_all.sh) 
 - YAGNI: code only what is needed NOW.
 - One logical change per commit.
