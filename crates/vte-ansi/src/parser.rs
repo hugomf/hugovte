@@ -52,6 +52,7 @@ enum AnsiState {
     Escape,
     Csi,
     Osc,
+    Charset,
 }
 
 pub struct AnsiParser {
@@ -168,6 +169,7 @@ impl AnsiParser {
             AnsiState::Escape => self.escape_char(ch, grid),
             AnsiState::Csi => self.csi_char(ch, grid),
             AnsiState::Osc => self.osc_char(ch, grid),
+            AnsiState::Charset => self.charset_char(ch, grid),
         }
     }
 
@@ -204,6 +206,10 @@ impl AnsiParser {
                 self.state = AnsiState::Osc;
                 self.osc_buffer.clear();
                 self.in_osc_escape = false;
+            }
+            '(' | ')' | '*' | '+' => {
+                // Charset designation (ESC <designator> <charset>)
+                self.state = AnsiState::Charset;
             }
             '7' => {
                 grid.save_cursor();
@@ -364,6 +370,12 @@ impl AnsiParser {
             'u' => grid.restore_cursor(),
             _ => {}
         }
+    }
+
+    fn charset_char(&mut self, _ch: char, _grid: &mut dyn AnsiGrid) {
+        // Character set designation: ESC <designator> <charset>
+        // For now, ignore and return to normal state
+        self.state = AnsiState::Normal;
     }
 
     fn osc_char(&mut self, ch: char, grid: &mut dyn AnsiGrid) {
