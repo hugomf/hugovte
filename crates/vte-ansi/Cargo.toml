@@ -4,9 +4,24 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Hugo <hugo@example.com>"]
 license = "MIT OR Apache-2.0"
-description = "A comprehensive UTF-8-safe ANSI/VT escape sequence parser"
-keywords = ["ansi", "vt", "terminal", "parser", "escape-sequences"]
-categories = ["parsing", "command-line-interface"]
+description = "A fast, memory-safe ANSI/VT escape sequence parser for terminal applications"
+readme = "README.md"
+documentation = "https://docs.rs/vte-ansi"
+homepage = "https://github.com/hugomf/hugovte"
+repository = "https://github.com/hugomf/hugovte/tree/master/crates/vte-ansi"
+keywords = ["ansi", "vt", "terminal", "parser", "escape-sequences", "vt100", "xterm", "utf8", "no-panic"]
+categories = ["parsing", "terminal-interface", "no-std"]
+exclude = [
+    "fuzz/Cargo.lock",
+    "fuzz/",
+    "scripts/",
+    "**/*.profraw",
+    "**/*.profdata",
+    "**/*.bkup",
+    "**/*.backup*",
+    "**/*_broken.rs",
+    "**/*.orig"
+]
 
 [dependencies]
 memchr = "2.7"
