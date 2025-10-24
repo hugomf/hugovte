@@ -1288,12 +1288,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "852e951cb7832cb45cb1169900d19760cfa39b82bc0ea9c0e5a14ae88411c98b"
 
 [[package]]
+name = "vte-ansi"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "memchr",
+ "rand",
+]
+
+[[package]]
 name = "vte-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
- "base64",
  "cairo-rs",
  "fontdue",
  "glib",
@@ -1303,6 +1311,7 @@ dependencies = [
  "portable-pty",
  "rand",
  "thiserror 1.0.69",
+ "vte-ansi",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/vte-core", "crates/vte-gtk"]
+members = ["crates/vte-core", "crates/vte-gtk", "crates/vte-ansi"]
+exclude = ["crates/vte-ansi/fuzz"]
 resolver = "2"
 
 [package]

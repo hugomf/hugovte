@@ -1,0 +1,14 @@
+[package]
+name = "vte-ansi"
+version = "0.1.0"
+edition = "2021"
+authors = ["Hugo <hugo@example.com>"]
+license = "MIT OR Apache-2.0"
+description = "A comprehensive UTF-8-safe ANSI/VT escape sequence parser"
+keywords = ["ansi", "vt", "terminal", "parser", "escape-sequences"]
+categories = ["parsing", "command-line-interface"]
+
+[dependencies]
+memchr = "2.7"
+rand = "0.9"
+base64 = "0.22"

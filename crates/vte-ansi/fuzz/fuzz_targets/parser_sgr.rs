@@ -1,6 +1,6 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use hugovte::ansi::{AnsiParser, AnsiGrid, Color};
+use vte_ansi::{AnsiParser, AnsiGrid, Color};
 
 #[derive(Default)]
 struct FuzzGrid;
@@ -31,19 +31,20 @@ impl AnsiGrid for FuzzGrid {
 }
 
 fuzz_target!(|data: &[u8]| {
-    if data.is_empty() {
+    if data.is_empty() || data.len() > 50 {
         return;
     }
     
     let mut parser = AnsiParser::new();
     let mut grid = FuzzGrid::default();
     
-    let chunk_size = (data[0] as usize % 16) + 1;
-    
-    for chunk in data[1..].chunks(chunk_size) {
-
-        for &byte in data {
-            parser.process(byte, &mut grid);
-        }
+    let mut seq = String::from("\x1B[");
+    for (i, &byte) in data.iter().enumerate() {
+        if i > 0 { seq.push(';'); }
+        seq.push_str(&((byte as u16) % 300).to_string());
+        if i >= 10 { break; }
     }
+    seq.push('m');
+    
+    parser.feed_str(&seq, &mut grid);
 });

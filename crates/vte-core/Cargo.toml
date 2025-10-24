@@ -21,7 +21,7 @@ glib = "0.21"
 async-channel = "2.5"
 rand = "0.9"
 anyhow = "1.0"
-base64 = "0.22"
+vte-ansi = { path = "../vte-ansi" }
 
 [features]
 default = ["mouse", "selection", "alternate_screen"]

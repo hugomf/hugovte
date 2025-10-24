@@ -5,6 +5,7 @@
 set -e
 
 MODE="${1:-quick}"
+FUZZ_DIR="."
 FUZZ_TARGETS=(
     "parser_basic:120"     # 2 hours
     "parser_utf8:60"       # 1 hour
@@ -66,11 +67,11 @@ check_dependencies() {
 
 # Initialize fuzzing if needed
 init_fuzzing() {
-    if [ ! -d "fuzz" ]; then
-        log_info "Initializing fuzzing..."
-        $CARGO_FUZZ init
-        log_success "Fuzzing initialized"
+    if [ ! -d "$FUZZ_DIR/fuzz" ]; then
+        log_error "Fuzz directory not found at $FUZZ_DIR/fuzz. Please ensure it has been moved."
+        exit 1
     fi
+    log_info "Fuzz directory found at $FUZZ_DIR/fuzz"
 }
 
 # Run a single fuzz target
@@ -78,15 +79,16 @@ run_target() {
     local target=$1
     local duration=$2
     local sanitizer=${3:-none}
-    
+
     log_info "Running $target for ${duration}s with ${sanitizer} sanitizer..."
-    
-    local cmd="$CARGO_FUZZ run $target -- -max_total_time=$duration -timeout=1"
-    
+
+    local base_cmd="cd '$FUZZ_DIR/fuzz' && $CARGO_FUZZ run $target"
+    local cmd="$base_cmd -- -max_total_time=$duration -timeout=1"
+
     if [ "$sanitizer" != "none" ]; then
-        cmd="$CARGO_FUZZ run $target --sanitizer=$sanitizer -- -max_total_time=$duration -timeout=1"
+        cmd="$base_cmd --sanitizer=$sanitizer -- -max_total_time=$duration -timeout=1"
     fi
-    
+
     if eval "$cmd"; then
         log_success "$target completed successfully"
         return 0
@@ -99,8 +101,8 @@ run_target() {
 # Check for crashes
 check_crashes() {
     local target=$1
-    local crash_dir="fuzz/artifacts/$target"
-    
+    local crash_dir="$FUZZ_DIR/fuzz/artifacts/$target"
+
     if [ -d "$crash_dir" ] && [ "$(ls -A $crash_dir 2>/dev/null)" ]; then
         log_error "Crashes found in $crash_dir:"
         ls -lh "$crash_dir"
@@ -206,12 +208,12 @@ run_sanitizers() {
 # Generate coverage report
 generate_coverage() {
     log_info "Generating coverage report..."
-    
+
     for target_spec in "${FUZZ_TARGETS[@]}"; do
         IFS=':' read -r target _ <<< "$target_spec"
-        
+
         log_info "Coverage for $target..."
-        if $CARGO_FUZZ coverage "$target"; then
+        if cd "$FUZZ_DIR/fuzz" && $CARGO_FUZZ coverage "$target"; then
             log_success "Coverage generated for $target"
         else
             log_warning "Coverage generation failed for $target"
@@ -222,26 +224,26 @@ generate_coverage() {
 # Minimize crash cases
 minimize_crashes() {
     log_info "Minimizing crash cases..."
-    
+
     local found_crashes=0
-    
+
     for target_spec in "${FUZZ_TARGETS[@]}"; do
         IFS=':' read -r target _ <<< "$target_spec"
-        local crash_dir="fuzz/artifacts/$target"
-        
+        local crash_dir="$FUZZ_DIR/fuzz/artifacts/$target"
+
         if [ -d "$crash_dir" ] && [ "$(ls -A $crash_dir 2>/dev/null)" ]; then
             log_info "Minimizing crashes for $target..."
-            
+
             for crash in "$crash_dir"/*; do
                 if [ -f "$crash" ]; then
                     log_info "Minimizing $(basename $crash)..."
-                    $CARGO_FUZZ cmin "$target" "$crash" || true
+                    cd "$FUZZ_DIR/fuzz" && $CARGO_FUZZ cmin "$target" "$(basename "$crash")" || true
                     ((found_crashes++))
                 fi
             done
         fi
     done
-    
+
     if [ $found_crashes -eq 0 ]; then
         log_success "No crashes to minimize"
     else
@@ -252,13 +254,13 @@ minimize_crashes() {
 # Clean up artifacts
 clean_artifacts() {
     log_info "Cleaning up fuzz artifacts..."
-    
-    if [ -d "fuzz/artifacts" ]; then
-        rm -rf fuzz/artifacts/*
+
+    if [ -d "$FUZZ_DIR/fuzz/artifacts" ]; then
+        rm -rf "$FUZZ_DIR/fuzz/artifacts"/*
         log_success "Artifacts cleaned"
     fi
-    
-    if [ -d "fuzz/corpus" ]; then
+
+    if [ -d "$FUZZ_DIR/fuzz/corpus" ]; then
         log_info "Corpus directory preserved (contains useful test cases)"
     fi
 }
@@ -277,27 +279,27 @@ generate_report() {
     
     for target_spec in "${FUZZ_TARGETS[@]}"; do
         IFS=':' read -r target _ <<< "$target_spec"
-        local crash_dir="fuzz/artifacts/$target"
-        
+        local crash_dir="$FUZZ_DIR/fuzz/artifacts/$target"
+
         echo "Target: $target"
-        
+
         if [ -d "$crash_dir" ] && [ "$(ls -A $crash_dir 2>/dev/null)" ]; then
             local count=$(ls -1 "$crash_dir" | wc -l)
             echo "  Status: ❌ FAILED ($count crashes)"
             total_crashes=$((total_crashes + count))
-            
+
             echo "  Crashes:"
             ls -1 "$crash_dir" | head -5 | sed 's/^/    - /'
-            
+
             if [ "$count" -gt 5 ]; then
                 echo "    ... and $((count - 5)) more"
             fi
         else
             echo "  Status: ✅ PASSED"
         fi
-        
+
         # Corpus size
-        local corpus_dir="fuzz/corpus/$target"
+        local corpus_dir="$FUZZ_DIR/fuzz/corpus/$target"
         if [ -d "$corpus_dir" ]; then
             local corpus_count=$(ls -1 "$corpus_dir" 2>/dev/null | wc -l)
             echo "  Corpus: $corpus_count test cases"
@@ -316,7 +318,7 @@ generate_report() {
         return 0
     else
         log_error "Fuzzing found $total_crashes issue(s)"
-        log_info "Review crashes in fuzz/artifacts/"
+        log_info "Review crashes in $FUZZ_DIR/fuzz/artifacts/"
         log_info "Minimize with: ./run_fuzzing.sh minimize"
         return 1
     fi

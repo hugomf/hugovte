@@ -1,7 +1,7 @@
 // tests/integration_tests.rs
 //! Integration tests for realistic terminal scenarios
 
-use hugovte::{AnsiParser, AnsiGrid, Cell, Color};
+use vte_ansi::{AnsiParser, AnsiGrid, Cell, Color};
 
 /// Mock grid for integration testing
 #[derive(Default)]

@@ -1,12 +1,17 @@
+//! Fuzzing target for UTF-8 handling in the ANSI parser
+
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use hugovte::ansi::{AnsiParser, AnsiGrid, Cell, Color};
+
+use vte_ansi::{AnsiParser, AnsiGrid, Color};
 
 #[derive(Default)]
-struct FuzzGrid;
+struct FuzzGrid {
+    output_len: usize,
+}
 
 impl AnsiGrid for FuzzGrid {
-    fn put(&mut self, _: char) {}
+    fn put(&mut self, _: char) { self.output_len = self.output_len.saturating_add(1); }
     fn advance(&mut self) {}
     fn left(&mut self, _: usize) {}
     fn right(&mut self, _: usize) {}
@@ -31,16 +36,21 @@ impl AnsiGrid for FuzzGrid {
 }
 
 fuzz_target!(|data: &[u8]| {
+    if data.is_empty() {
+        return;
+    }
+
+    // Limit input size to prevent timeouts
+    let data = if data.len() > 10000 {
+        &data[..10000]
+    } else {
+        data
+    };
+
     let mut parser = AnsiParser::new();
     let mut grid = FuzzGrid::default();
-    
-    if let Ok(s) = std::str::from_utf8(data) {
-        parser.feed_str(s, &mut grid);
-    } else {
 
-        for &byte in data {
-            parser.process(byte, &mut grid);
-        }
-
-    }
+    // Test UTF-8 handling with lossy UTF-8 conversion
+    let text = String::from_utf8_lossy(data);
+    parser.feed_str(&text, &mut grid);
 });

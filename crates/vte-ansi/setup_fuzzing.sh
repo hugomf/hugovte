@@ -86,7 +86,7 @@ echo "1. Quick test (5 minutes per target):"
 echo -e "   ${YELLOW}./run_fuzzing.sh quick${NC}"
 echo ""
 echo "2. Or test one target manually:"
-echo -e "   ${YELLOW}cargo +nightly fuzz run parser_basic -- -max_total_time=60${NC}"
+echo -e "   ${YELLOW}cd fuzz && cargo +nightly fuzz run parser_basic -- -max_total_time=60${NC}"
 echo ""
 echo "3. Full test (6+ hours - run overnight):"
 echo -e "   ${YELLOW}./run_fuzzing.sh full${NC}"
@@ -98,7 +98,7 @@ read -r response
 if [[ "$response" =~ ^[Yy]$ ]]; then
     echo ""
     echo -e "${BLUE}Running 1-minute test on parser_basic...${NC}"
-    if cargo +nightly fuzz run parser_basic -- -max_total_time=60 -timeout=1; then
+    if cd fuzz && cargo +nightly fuzz run parser_basic -- -max_total_time=60 -timeout=1 && cd -; then
         echo ""
         echo -e "${GREEN}✓ Test passed! Your fuzzing setup is working!${NC}"
     else

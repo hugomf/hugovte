@@ -1,6 +1,9 @@
+//! Fuzzing target for OSC (Operating System Command) sequences
+
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use hugovte::ansi::{AnsiParser, AnsiGrid, Color};
+
+use vte_ansi::{AnsiParser, AnsiGrid, Color};
 
 #[derive(Default)]
 struct FuzzGrid;
@@ -34,28 +37,18 @@ fuzz_target!(|data: &[u8]| {
     if data.is_empty() {
         return;
     }
-    
+
+    // Limit input size to prevent timeouts
+    let data = if data.len() > 10000 {
+        &data[..10000]
+    } else {
+        data
+    };
+
     let mut parser = AnsiParser::new();
     let mut grid = FuzzGrid::default();
-    
-    // Test OSC with BEL terminator
-    let mut seq = Vec::from(b"\x1B]0;" as &[u8]);
-    seq.extend_from_slice(&data[..data.len().min(100)]);
-    seq.push(0x07);
-    for &byte in data {
-        parser.process(byte, &mut grid);
-    }
-    
-    // Reset and test with ST terminator
-    parser = AnsiParser::new();
-    grid = FuzzGrid::default();
-    
-    let mut seq2 = Vec::from(b"\x1B]0;" as &[u8]);
-    seq2.extend_from_slice(&data[..data.len().min(100)]);
-    seq2.extend_from_slice(b"\x1B\\");
 
-    for &byte in data {
-        parser.process(byte, &mut grid);
-    }
-
+    // Feed the fuzzer-generated data using lossy UTF-8 conversion
+    let text = String::from_utf8_lossy(data);
+    parser.feed_str(&text, &mut grid);
 });

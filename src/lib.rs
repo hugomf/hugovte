@@ -6,7 +6,7 @@
 //! - Customizable appearance
 //! - PTY integration
 
-// Re-export from vte-core
+// Re-export from vte-core (which includes the ANSI parser)
 pub use vte_core::*;
 
 #[cfg(target_os = "macos")]
