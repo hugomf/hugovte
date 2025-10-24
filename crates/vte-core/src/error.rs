@@ -7,7 +7,7 @@ pub enum TerminalError {
     DrawingCacheCreation(String),
     
     #[error("PTY error: {0}")]
-    PtyError(#[from] portable_pty::Error),
+    PtyError(#[from] anyhow::Error),
     
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),

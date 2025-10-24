@@ -131,6 +131,24 @@ pub struct Cell {
     pub dim: bool,
 }
 
+// ---------- Input Events ----------
+
+/// Key event for input handling
+#[derive(Debug, Clone)]
+pub struct KeyEvent {
+    pub keyval: u32,
+    pub state: u32,
+}
+
+/// Mouse event for input handling
+#[derive(Debug, Clone)]
+pub struct MouseEvent {
+    pub button: u32,
+    pub x: f64,
+    pub y: f64,
+    pub modifiers: u32,
+}
+
 // ---------- Grid trait ----------
 
 pub trait AnsiGrid {

@@ -15,15 +15,15 @@ use std::thread;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-/// Main terminal widget - coordinates GTK, PTY, and rendering
-pub struct VteTerminal {
+/// Main terminal core - coordinates PTY, parsing, and grid
+pub struct VteTerminalCore {
     pub area: DrawingArea,
     pub drawing_cache: DrawingCache,
     pub grid: Arc<RwLock<Grid>>,
     pty_pair: Arc<RwLock<Option<portable_pty::PtyPair>>>,
 }
 
-impl VteTerminal {
+impl VteTerminalCore {
     pub fn new() -> Self {
         Self::with_config(TerminalConfig::default())
     }
@@ -421,7 +421,7 @@ impl VteTerminal {
     }
 }
 
-impl Drop for VteTerminal {
+impl Drop for VteTerminalCore {
     fn drop(&mut self) {
         if let Ok(mut pair_guard) = self.pty_pair.write() {
             *pair_guard = None;

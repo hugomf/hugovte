@@ -1,14 +1,20 @@
+[workspace]
+members = ["crates/vte-core", "crates/vte-gtk"]
+resolver = "2"
+
 [package]
 name = "hugovte"
 version = "0.1.0"
 edition = "2024"
 
-# [lib]
-# name = "hugovte"
-# path = "src/lib.rs"
+[lib]
+name = "hugovte"
+path = "src/lib.rs"
 
 [dependencies]
-gtk4 = { version = "0.10.1", package = "gtk4" }#gdk4 = "0.10.1"
+vte-core = { path = "crates/vte-core" }
+vte-gtk = { path = "crates/vte-gtk" }
+gtk4 = { version = "0.10.1", package = "gtk4" }
 cairo-rs = { version = "0.21.2", features = ["png"] }
 pango = "0.21.3"
 async-channel = "2.5.0"
@@ -21,9 +27,10 @@ objc2-app-kit = "0.3.2"
 core-foundation = "0.10.0"
 glib = "0.21.3"
 
-portable-pty = "0.9.0" 
+portable-pty = "0.9"
 memchr = "2.7.6"
 rand = "0.9.0"
+thiserror = "2.0"
 
 [build-dependencies]
 cc = "1.2.41"

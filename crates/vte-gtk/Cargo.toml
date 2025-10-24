@@ -1,0 +1,18 @@
+[package]
+name = "vte-gtk"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Hugo <hugo@example.com>"]
+license = "MIT OR Apache-2.0"
+description = "GTK backend for vte-core terminal emulator"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+vte-core = { path = "../vte-core" }
+gtk4 = "0.10"
+cairo-rs = { version = "0.21", features = ["png"] }
+pango = "0.21"
+glib = "0.21"

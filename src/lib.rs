@@ -6,21 +6,8 @@
 //! - Customizable appearance
 //! - PTY integration
 
-pub mod ansi;
-pub mod config;
-pub mod constants;
-pub mod drawing;
-pub mod grid;
-pub mod input;
-pub mod selection;
-pub mod terminal;
-
-// Re-export main types for convenience
-pub use ansi::{AnsiParser, AnsiGrid, Color, Cell};
-pub use config::TerminalConfig;
-pub use grid::Grid;
-pub use terminal::VteTerminal;
-
+// Re-export from vte-core
+pub use vte_core::*;
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -29,8 +16,8 @@ unsafe extern "C" {
         gtk_window: *mut std::ffi::c_void,
         opacity: f64,
         blur_amount: f64,
-        red: f64, 
-        green: f64, 
+        red: f64,
+        green: f64,
         blue: f64
     ) -> i32;
 }

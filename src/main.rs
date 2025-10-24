@@ -1,21 +1,10 @@
 // src/main.rs
-mod ansi;
-mod grid;           // NEW - Grid state & AnsiGrid implementation
-mod terminal;       // NEW - Terminal widget (was vte.rs)
-mod input;          // NEW - Input handlers
-mod selection;
-mod config;
-mod constants;
-mod drawing;
-
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, gdk, CssProvider};
-use crate::terminal::VteTerminal;
-use crate::config::TerminalConfig;
-use crate::ansi::Color;
+use vte_core::{VteTerminalCore, TerminalConfig, Color};
 
 
-// Declare the external C functions
+// Use the external C functions from the lib
 #[cfg(target_os = "macos")]
 use hugovte::{init_blur_api, set_opacity_and_blur};
 
@@ -58,11 +47,11 @@ fn main() {
         setup_transparency();
 
         // Create terminal widget
-        let terminal = VteTerminal::with_config(config);
+        let terminal = VteTerminalCore::with_config(config);
         terminal.area.set_vexpand(true);
         terminal.area.set_hexpand(true);
         
-        window.set_child(Some(terminal.widget()));
+        window.set_child(Some(&terminal.area));
 
 
 
