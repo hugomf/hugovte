@@ -237,6 +237,14 @@ impl AnsiParser {
                 grid.up(1);
                 self.state = AnsiState::Normal;
             }
+            '=' => {
+                grid.set_keypad_mode(true);
+                self.state = AnsiState::Normal;
+            }
+            '>' => {
+                grid.set_keypad_mode(false);
+                self.state = AnsiState::Normal;
+            }
             _ => {
                 self.report_error(AnsiError::MalformedSequence {
                     context: format!("Unknown escape char: {}", ch),
@@ -754,6 +762,11 @@ mod tests {
 
         fn set_focus_reporting(&mut self, _enable: bool) {
             self.output.push_str(&format!("[FOCUS_REPORTING_{}]", if _enable { "ON" } else { "OFF" }));
+        }
+
+        // Keypad mode (Application vs Numeric)
+        fn set_keypad_mode(&mut self, application: bool) {
+            self.output.push_str(&format!("[KEYPAD_MODE_{}]", if application { "APPLICATION" } else { "NUMERIC" }));
         }
     }
 
@@ -1659,5 +1672,21 @@ mod tests {
         assert!(g.output.contains("[APP_CURSOR_KEYS_ON]"));
         assert!(g.output.contains("[MOUSE_MODE_1000_ON]"));
         assert!(g.output.contains("")); // Cursor visibility handled separately
+    }
+
+
+
+    #[test]
+    fn keypad_mode_application() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // ESC = should set application keypad mode
+        p.feed_str("\x1B=", &mut g);
+        assert!(g.output.contains("[KEYPAD_MODE_APPLICATION]"));
+        
+        // ESC > should set numeric keypad mode  
+        p.feed_str("\x1B>", &mut g);
+        assert!(g.output.contains("[KEYPAD_MODE_NUMERIC]"));
     }
 }

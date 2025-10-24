@@ -100,4 +100,7 @@ pub trait AnsiGrid {
 
     // Synchronized output mode
     fn set_synchronized_output(&mut self, _enable: bool) {}
+
+    // Keypad mode (Application vs Numeric)
+    fn set_keypad_mode(&mut self, _application: bool) {}
 }
