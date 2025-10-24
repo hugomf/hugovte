@@ -1,6 +1,9 @@
 use crate::color::Color;
 
-/// Grid cell with styling information
+/// A single character cell with styling attributes.
+///
+/// Represents one character position in a terminal grid, containing the character
+/// itself and all text styling that should be applied when rendering it.
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Cell {
     pub ch: char,
@@ -28,7 +31,67 @@ pub struct MouseEvent {
     pub modifiers: u32,
 }
 
-/// Trait for ANSI escape sequence grid operations
+/// Trait for ANSI escape sequence grid operations.
+///
+/// Implement this trait to handle text and control operations that are
+/// triggered by ANSI/VT escape sequences parsed by [`AnsiParser`].
+///
+/// # Basic Text Operations
+///
+/// The parser calls these methods to output normal text:
+/// - [`put()`] - outputs a character at the current cursor position
+/// - [`advance()`] - moves cursor right for next character
+/// - [`newline()`] - moves to start of next line  
+/// - [`carriage_return()`] - moves to start of current line
+///
+/// # Cursor Movement
+///
+/// Positioning the cursor for subsequent text:
+/// - [`up()`], [`down()`], [`left()`], [`right()`] - relative movement
+/// - [`move_abs()`], [`move_rel()`] - absolute/relative positioning
+/// - [`save_cursor()`], [`restore_cursor()`] - cursor stack operations
+///
+/// # Display Control
+///
+/// Managing display appearance:
+/// - [`clear_screen()`], [`clear_line()`] - erase operations
+/// - [`reset_attrs()`] - reset all text attributes to defaults
+/// - [`set_bold()`], [`set_italic()`], etc. - individual attribute settings
+/// - [`set_fg()`], [`set_bg()`] - color changes
+///
+/// # Advanced Terminal Features
+///
+/// Many terminal applications require extended functionality:
+/// - [`insert_chars()`], [`delete_chars()`] - text editing operations
+/// - [`insert_lines()`], [`delete_lines()`] - line manipulation  
+/// - [`scroll_up()`], [`scroll_down()`] - viewport scrolling
+/// - [`use_alternate_screen()`] - alternate screen buffer
+/// - [`set_mouse_reporting_mode()`] - interactive features
+///
+/// # Example
+///
+/// ```rust
+/// use vte_ansi::{AnsiParser, AnsiGrid};
+/// use vte_ansi::Color;
+///
+/// struct MyGrid {
+///     cursor_x: usize,
+///     cursor_y: usize,
+///     // ... other state
+/// }
+///
+/// impl AnsiGrid for MyGrid {
+///     fn put(&mut self, ch: char) {
+///         // Draw character at cursor position
+///         self.draw_at(self.cursor_x, self.cursor_y, ch);
+///     }
+///
+///     fn advance(&mut self) { self.cursor_x += 1; }
+///
+///     // ... implement other required methods
+/// }
+/// ```
+///
 pub trait AnsiGrid {
     fn put(&mut self, ch: char);
     fn advance(&mut self);
