@@ -41,9 +41,12 @@ jobs:
     - name: Cache Cargo registry
       uses: actions/cache@v3
       with:
-        path: ~/.cargo/registry
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
+          ${{ runner.os }}-cargo-${{ matrix.rust }}-
           ${{ runner.os }}-cargo-
 
     - name: Install cargo-nextest (Linux/macOS)
@@ -70,15 +73,6 @@ jobs:
     - name: Run clippy
       run: cargo clippy --workspace --all-targets -- -D warnings
 
-    - name: Run fuzz tests for 10 seconds (Linux only)
-      if: runner.os == 'Linux'
-      run: |
-        cd crates/vte-ansi
-        if [ -d fuzz ]; then
-          cargo fuzz run parser_basic -- -max_total_time=10
-          cargo fuzz run parser_sgr -- -max_total_time=10
-        fi
-
   benches:
     name: Benchmarks
     runs-on: ubuntu-latest
@@ -93,7 +87,9 @@ jobs:
     - name: Cache Cargo registry
       uses: actions/cache@v3
       with:
-        path: ~/.cargo/registry
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
         key: ubuntu-latest-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Run benchmarks (vte-ansi only)

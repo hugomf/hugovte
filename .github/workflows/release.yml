@@ -12,7 +12,6 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    if: github.repository == 'hugomf/hugovte'
 
     steps:
     - uses: actions/checkout@v4
@@ -25,7 +24,9 @@ jobs:
     - name: Cache Cargo registry
       uses: actions/cache@v3
       with:
-        path: ~/.cargo/registry
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
         key: ubuntu-latest-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Publish vte-ansi
@@ -36,14 +37,14 @@ jobs:
         CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
     - name: Create GitHub Release
-      uses: actions/create-release@v1
+      uses: softprops/action-gh-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
         body: |
-          See [CHANGELOG.md](https://github.com/hugomf/hugovte/blob/master/CHANGELOG.md) for release details.
+          See [CHANGELOG.md](https://github.com/hugomf/hugovte/blob/${{ github.sha }}/CHANGELOG.md) for release details.
 
           ## Installation
 
@@ -57,21 +58,21 @@ jobs:
   notify:
     name: Discord Notification
     runs-on: ubuntu-latest
-    if: github.repository == 'hugomf/hugovte'
     needs: publish
+    if: success()
     steps:
     - name: Notify Discord
       uses: rjstone/discord-webhook-notify@v1
       with:
-        webhookUrl: ${{ secrets.DISCORD_WEBHOOK }}
-        title: "📦 vte-ansi ${{ github.ref }} released!"
+        webhookUrl: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        title: "📦 vte-ansi ${{ github.ref_name }} released!"
         description: "New release published to crates.io"
         color: "0x00ff00"
         fields: |
           [
             {
               "name": "Release Notes",
-              "value": "[View CHANGELOG](https://github.com/hugomf/hugovte/blob/${{ github.sha }}/CHANGELOG.md)",
+              "value": "[View CHANGELOG](https://github.com/hugomf/hugovte/blob/${{ github.ref_name }}/CHANGELOG.md)",
               "inline": true
             },
             {
