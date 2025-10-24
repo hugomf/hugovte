@@ -1,1 +1,17 @@
-/target
+# Build artifacts
+target/
+
+# macOS
+.DS_Store
+
+# Backup and temporary files
+*.bkup
+**/*_backup*.rs
+**/*_broken.rs
+**/*_temp*.rs
+
+# Coverage reports
+tarpaulin-report.html
+
+# Fuzz targets and build artifacts
+crates/vte-ansi/fuzz/target/
