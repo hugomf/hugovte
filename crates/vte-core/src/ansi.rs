@@ -32,6 +32,7 @@
 
 use crate::constants::COLOR_PALETTE;
 use std::fmt;
+use base64::prelude::*;
 
 // ---------- Error handling ----------
 
@@ -206,6 +207,23 @@ pub trait AnsiGrid {
     // Phase-4 additional modes
     fn set_insert_mode(&mut self, _enable: bool) {}
     fn set_auto_wrap(&mut self, _enable: bool) {}
+
+    // Phase-2 DEC private modes
+    fn set_application_cursor_keys(&mut self, _enable: bool) {}
+    fn set_mouse_reporting_mode(&mut self, _mode: u16, _enable: bool) {}
+    fn set_focus_reporting(&mut self, _enable: bool) {}
+
+
+        // Phase-2 OSC sequences
+        fn set_current_directory(&mut self, _directory: &str) {}
+        fn handle_clipboard_data(&mut self, _clipboard_id: u8, _data: &str) {}
+        fn handle_hyperlink(&mut self, _params: Option<&str>, _uri: &str) {}
+
+        // Bracketed paste mode
+        fn set_bracketed_paste_mode(&mut self, _enable: bool) {}
+
+        // Synchronized output mode
+        fn set_synchronized_output(&mut self, _enable: bool) {}
 }
 
 // ---------- Parser state ----------
@@ -496,17 +514,31 @@ impl AnsiParser {
             'm' => self.execute_sgr(grid),
             'h' if self.private => {
                 match self.params.first() {
+                    Some(&1) => grid.set_application_cursor_keys(true),
                     Some(&25) => grid.set_cursor_visible(true),
+                    Some(&47) => grid.use_alternate_screen(true),
                     Some(&1049) => grid.use_alternate_screen(true),
                     Some(&7) => grid.set_auto_wrap(true),
+                    Some(&1000) => grid.set_mouse_reporting_mode(1000, true),
+                    Some(&1002) => grid.set_mouse_reporting_mode(1002, true),
+                    Some(&1005) => grid.set_mouse_reporting_mode(1005, true),
+                    Some(&1006) => grid.set_mouse_reporting_mode(1006, true),
+                    Some(&1004) => grid.set_focus_reporting(true),
                     _ => {}
                 }
             }
             'l' if self.private => {
                 match self.params.first() {
+                    Some(&1) => grid.set_application_cursor_keys(false),
                     Some(&25) => grid.set_cursor_visible(false),
+                    Some(&47) => grid.use_alternate_screen(false),
                     Some(&1049) => grid.use_alternate_screen(false),
                     Some(&7) => grid.set_auto_wrap(false),
+                    Some(&1000) => grid.set_mouse_reporting_mode(1000, false),
+                    Some(&1002) => grid.set_mouse_reporting_mode(1002, false),
+                    Some(&1005) => grid.set_mouse_reporting_mode(1005, false),
+                    Some(&1006) => grid.set_mouse_reporting_mode(1006, false),
+                    Some(&1004) => grid.set_focus_reporting(false),
                     _ => {}
                 }
             }
@@ -557,14 +589,56 @@ impl AnsiParser {
     }
 
     fn finish_osc(&mut self, grid: &mut dyn AnsiGrid) {
-        if let Some((num, text)) = self.osc_buffer.split_once(';') {
-            if num == "0" || num == "2" {
-                grid.set_title(text);
+        let buffer = self.osc_buffer.clone();
+        if let Some((num, text)) = buffer.split_once(';') {
+            match num {
+                "0" | "2" => {
+                    grid.set_title(text);
+                }
+                "52" => {
+                    // OSC 52 - Clipboard operations
+                    self.handle_clipboard_osc(text, grid);
+                }
+                "7" => {
+                    // OSC 7 - Current directory
+                    grid.set_current_directory(text);
+                }
+                "8" => {
+                    // OSC 8 - Hyperlink
+                    self.handle_hyperlink_osc(text, grid);
+                }
+                _ => {}
             }
         }
         self.state = AnsiState::Normal;
         self.osc_buffer.clear();
         self.in_osc_escape = false;
+    }
+
+    fn handle_clipboard_osc(&mut self, text: &str, grid: &mut dyn AnsiGrid) {
+        // OSC 52;c;dataBEL where c is clipboard type (0=clipboard, 1=primary, 2-255=other)
+        if let Some((clipboard_type, data)) = text.split_once(';') {
+            if let Ok(clipboard_id) = clipboard_type.parse::<u8>() {
+                if clipboard_id <= 1 {
+                    // Base64 decode the data
+                    if let Ok(decoded) = BASE64_STANDARD.decode(data) {
+                        if let Ok(decoded_str) = String::from_utf8(decoded) {
+                            grid.handle_clipboard_data(clipboard_id, &decoded_str);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_hyperlink_osc(&mut self, text: &str, grid: &mut dyn AnsiGrid) {
+        // OSC 8;params;URIST (params is optional, default empty)
+        // Empty URI (=) clears hyperlinks
+        // params like "id=someid" can be used by applications
+        if let Some((params, uri)) = text.split_once(';') {
+            let params = if params.is_empty() { None } else { Some(params) };
+            grid.handle_hyperlink(params, uri);
+        }
     }
 
     fn get_param(&self, idx: usize, default: u16) -> usize {
@@ -869,6 +943,19 @@ mod tests {
         fn set_auto_wrap(&mut self, enable: bool) {
             self.auto_wrap = enable;
             self.output.push_str(if enable { "[AUTO_WRAP_ON]" } else { "[AUTO_WRAP_OFF]" });
+        }
+
+        // Phase-2 DEC private modes
+        fn set_application_cursor_keys(&mut self, _enable: bool) {
+            self.output.push_str(&format!("[APP_CURSOR_KEYS_{}]", if _enable { "ON" } else { "OFF" }));
+        }
+
+        fn set_mouse_reporting_mode(&mut self, mode: u16, enable: bool) {
+            self.output.push_str(&format!("[MOUSE_MODE_{}_{}]", mode, if enable { "ON" } else { "OFF" }));
+        }
+
+        fn set_focus_reporting(&mut self, _enable: bool) {
+            self.output.push_str(&format!("[FOCUS_REPORTING_{}]", if _enable { "ON" } else { "OFF" }));
         }
     }
 
@@ -1679,5 +1766,100 @@ mod tests {
         assert_eq!(g.cursor_col, 0);  // Should have wrapped to start
         assert_eq!(g.cursor_row, 1);  // Should have moved to next row
         assert!(g.output.contains("\n")); // Should have output newline
+    }
+
+    // ---------- Phase-2 DEC private modes tests ----------
+
+    #[test]
+    fn dec_private_modes_application_cursor_keys() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // Enable application cursor keys
+        p.feed_str("\x1B[?1h", &mut g);
+        assert!(g.output.contains("[APP_CURSOR_KEYS_ON]"));
+
+        // Disable application cursor keys
+        p.feed_str("\x1B[?1l", &mut g);
+        assert!(g.output.contains("[APP_CURSOR_KEYS_OFF]"));
+    }
+
+    #[test]
+    fn dec_private_modes_mouse_reporting() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // Test different mouse reporting modes
+        p.feed_str("\x1B[?1000h", &mut g); // Normal mouse tracking
+        assert!(g.output.contains("[MOUSE_MODE_1000_ON]"));
+
+        p.feed_str("\x1B[?1002h", &mut g); // Button event mouse
+        assert!(g.output.contains("[MOUSE_MODE_1002_ON]"));
+
+        p.feed_str("\x1B[?1005h", &mut g); // UTF-8 mouse mode
+        assert!(g.output.contains("[MOUSE_MODE_1005_ON]"));
+
+        p.feed_str("\x1B[?1006h", &mut g); // SGR mouse mode
+        assert!(g.output.contains("[MOUSE_MODE_1006_ON]"));
+
+        // Disable modes
+        p.feed_str("\x1B[?1000l", &mut g);
+        assert!(g.output.contains("[MOUSE_MODE_1000_OFF]"));
+
+        p.feed_str("\x1B[?1002l", &mut g);
+        assert!(g.output.contains("[MOUSE_MODE_1002_OFF]"));
+
+        p.feed_str("\x1B[?1005l", &mut g);
+        assert!(g.output.contains("[MOUSE_MODE_1005_OFF]"));
+
+        p.feed_str("\x1B[?1006l", &mut g);
+        assert!(g.output.contains("[MOUSE_MODE_1006_OFF]"));
+    }
+
+    #[test]
+    fn dec_private_modes_focus_reporting() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // Enable focus reporting
+        p.feed_str("\x1B[?1004h", &mut g);
+        assert!(g.output.contains("[FOCUS_REPORTING_ON]"));
+
+        // Disable focus reporting
+        p.feed_str("\x1B[?1004l", &mut g);
+        assert!(g.output.contains("[FOCUS_REPORTING_OFF]"));
+    }
+
+    #[test]
+    fn dec_private_modes_alternate_screen() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // Enable alternate screen (both 47 and 1049)
+        p.feed_str("\x1B[?47h", &mut g);
+        assert!(g.output.contains("[ALT_SCREEN_ON]"));
+
+        p.feed_str("\x1B[?1049h", &mut g);
+        assert!(g.output.contains("[ALT_SCREEN_ON]"));
+
+        // Disable alternate screen
+        p.feed_str("\x1B[?47l", &mut g);
+        assert!(g.output.contains("[ALT_SCREEN_OFF]"));
+
+        p.feed_str("\x1B[?1049l", &mut g);
+        assert!(g.output.contains("[ALT_SCREEN_OFF]"));
+    }
+
+    #[test]
+    fn dec_private_modes_combined() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // Test multiple modes in sequence
+        p.feed_str("\x1B[?1h\x1B[?1000h\x1B[?25l", &mut g);
+
+        assert!(g.output.contains("[APP_CURSOR_KEYS_ON]"));
+        assert!(g.output.contains("[MOUSE_MODE_1000_ON]"));
+        assert!(g.output.contains("")); // Cursor visibility handled separately
     }
 }
