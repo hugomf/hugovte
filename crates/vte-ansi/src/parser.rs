@@ -1193,11 +1193,11 @@ mod tests {
     fn fuzz_like_random_input() {
         let mut p = AnsiParser::new();
         let mut g = MockGrid::new();
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Generate random byte sequences to simulate fuzzing
         for _ in 0..1000 {
-            let len = rng.gen_range(1..1000);
+            let len = rng.random_range(1..1000);
             let mut bytes = vec![0u8; len];
             rng.fill(&mut bytes[..]);
             p.feed_bytes(&bytes, &mut g); // Should not panic

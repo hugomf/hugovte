@@ -10,5 +10,16 @@ categories = ["parsing", "command-line-interface"]
 
 [dependencies]
 memchr = "2.7"
-rand = "0.9"
 base64 = "0.22"
+
+
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"] }
+rand = "0.9"  # You already have this for tests
+
+[[bench]]
+name = "parser_bench"
+harness = false
+
+[profile.bench]
+debug = true  # Enable debug symbols for profiling
