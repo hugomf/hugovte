@@ -55,6 +55,45 @@ enum AnsiState {
     Charset,
 }
 
+/// An ANSI/VT escape sequence parser that converts control sequences into actions on a display grid.
+///
+/// The parser supports a comprehensive set of ANSI escape sequences including:
+/// - Text attributes and colors (SGR sequences)
+/// - Cursor positioning and movement
+/// - Screen clearing and scrolling
+/// - Character removes and inserts
+/// - Alternate screen buffer management
+/// - Keyboard and mouse mode settings
+/// - Title setting and other OSC sequences
+///
+/// # Examples
+///
+/// Basic usage with a simple grid:
+///
+/// ```rust
+/// use vte_ansi::{AnsiParser, AnsiGrid};
+///
+/// struct SimpleGrid {
+///     output: Vec<char>,
+/// }
+///
+/// impl SimpleGrid {
+///     fn new() -> Self { Self { output: Vec::new() } }
+/// }
+///
+/// impl AnsiGrid for SimpleGrid {
+///     fn put(&mut self, ch: char) { self.output.push(ch); }
+///     fn advance(&mut self) { }
+///     // ... implement other required methods
+/// }
+///
+/// // Parse colored text
+/// let mut parser = AnsiParser::new();
+/// let mut grid = SimpleGrid::new();
+///
+/// parser.feed_str("Hello \x1B[31mRed\x1B[0m World!", &mut grid);
+/// // Grid now contains "Hello Red World!" with color states
+/// ```
 pub struct AnsiParser {
     state: AnsiState,
     params: Vec<u16>,
@@ -84,6 +123,7 @@ impl ParserStats {
     }
 }
 
+#[allow(clippy::new_without_default)]
 impl AnsiParser {
     pub fn new() -> Self {
         Self {
