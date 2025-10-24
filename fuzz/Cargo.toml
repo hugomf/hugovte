@@ -1,0 +1,49 @@
+[package]
+name = "hugovte-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.hugovte]
+path = ".."
+
+[[bin]]
+name = "parser_basic"
+path = "fuzz_targets/parser_basic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_osc"
+path = "fuzz_targets/parser_osc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_sgr"
+path = "fuzz_targets/parser_sgr.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_state"
+path = "fuzz_targets/parser_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_utf8"
+path = "fuzz_targets/parser_utf8.rs"
+test = false
+doc = false
+bench = false
