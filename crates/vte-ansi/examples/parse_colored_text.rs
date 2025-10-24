@@ -10,8 +10,11 @@ use vte_ansi::{AnsiParser, AnsiGrid, Color};
 struct ColoredChar {
     ch: char,
     fg: Color,
+    #[allow(dead_code)]
     bg: Color,
+    #[allow(dead_code)]
     bold: bool,
+    #[allow(dead_code)]
     italic: bool,
 }
 

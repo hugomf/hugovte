@@ -87,7 +87,7 @@ fn main() {
         }
 
         // Every 10KB, print progress
-        if processor.total_processed % 10000 == 0 && processor.total_processed > 0 {
+        if processor.total_processed.is_multiple_of(10000) && processor.total_processed > 0 {
             print!("\rStreaming... {}", processor.total_processed);
             io::Write::flush(&mut io::stdout()).unwrap();
         }

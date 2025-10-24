@@ -12,15 +12,11 @@ repository = "https://github.com/hugomf/hugovte/tree/master/crates/vte-ansi"
 keywords = ["ansi", "vt", "terminal", "parser", "escape-sequences", "vt100", "xterm", "utf8", "no-panic"]
 categories = ["parsing", "terminal-interface", "no-std"]
 exclude = [
-    "fuzz/Cargo.lock",
-    "fuzz/",
-    "scripts/",
     "**/*.profraw",
     "**/*.profdata",
-    "**/*.bkup",
-    "**/*.backup*",
-    "**/*_broken.rs",
-    "**/*.orig"
+    "**/*.remot",
+    "**/Cargo.lock",
+    "Cargo.toml.orig"
 ]
 
 [dependencies]
