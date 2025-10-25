@@ -384,6 +384,7 @@ impl AnsiParser {
                     Some(&1005) => grid.set_mouse_reporting_mode(1005, true),
                     Some(&1006) => grid.set_mouse_reporting_mode(1006, true),
                     Some(&1004) => grid.set_focus_reporting(true),
+                    Some(&2004) => grid.set_bracketed_paste_mode(true),
                     _ => {}
                 }
             }

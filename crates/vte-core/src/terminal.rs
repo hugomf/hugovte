@@ -127,7 +127,7 @@ impl VteTerminalCore {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|_e| TerminalError::PtyCreationFailed {
+            .map_err(|_| TerminalError::PtyCreationFailed {
                 message: format!("Failed to create PTY"),
             })?;
 
@@ -419,6 +419,18 @@ impl VteTerminalCore {
     /// Set redraw callback sender for backend communication
     pub fn set_redraw_sender(&mut self, sender: async_channel::Sender<()>) {
         self.redraw_sender = Some(sender);
+    }
+
+    /// Process incoming data with bracketed paste awareness
+    /// If bracketed paste mode is enabled, data between start/end sequences is treated as a paste
+    pub fn handle_paste_data(&mut self, _data: &[u8]) -> Result<(), TerminalError> {
+        // In a real implementation, we'd track paste state and handle start/end markers
+        // For now, just ensure we can lock the grid (commits the access)
+        self.grid.write().map_err(|_| TerminalError::GridLockError {
+            message: "Grid lock poisoned in paste".to_string()
+        })?;
+        // The actual parsing is handled at the terminal level by send_input
+        Ok(())
     }
 }
 

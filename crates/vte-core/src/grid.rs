@@ -33,6 +33,7 @@ pub struct Grid {
     // Terminal modes
     insert_mode: bool,
     auto_wrap: bool,
+    bracketed_paste_mode: bool,
     // Alternate screen flag
     use_alternate_screen: bool,
     // Terminal title
@@ -89,6 +90,7 @@ impl Grid {
             cursor_stack: Vec::new(),
             insert_mode: false,
             auto_wrap: true,
+            bracketed_paste_mode: false,
             use_alternate_screen: false,
             title: String::new(),
         }
@@ -924,6 +926,20 @@ impl AnsiGrid for Grid {
 
     fn set_title(&mut self, title: &str) {
         self.title = title.to_string();
+    }
+
+    fn set_bracketed_paste_mode(&mut self, enable: bool) {
+        self.bracketed_paste_mode = enable;
+    }
+
+    fn handle_clipboard_data(&mut self, _clipboard_id: u8, _data: &str) {
+        // Placeholder - clipboard handling would be backend-specific
+        // For now, clipboards are handled via OSC 52 sequences parsed at terminal level
+    }
+
+    fn handle_hyperlink(&mut self, _params: Option<&str>, _uri: &str) {
+        // Placeholder - hyperlinks would require Cell hyperlink field
+        // For now, hyperlinks are handled via OSC 8 sequences parsed at terminal level
     }
 }
 
