@@ -101,12 +101,22 @@ impl DrawingCache {
         }
     }
 
-    /// Get font data for rendering (if available)
-    /// In a real implementation, this would return the fontdue Font for bitmap generation
-    pub fn get_font_data(&self, _variant: &str) -> Option<&Font> {
-        // For now, just return None - no actual fonts loaded
-        // In production, you'd look up by variant ("normal", "bold", etc.)
+    /// Get font data for rendering (if available) - placeholder for future fontdue bitmap generation
+    pub fn rasterize_glyph(&self, ch: char, _variant: &str) -> Option<(Vec<u8>, u32, u32)> {
+        // TODO: Implement actual fontdue glyph rasterization
+        // This would:
+        // 1. Look up the appropriate Font for the variant (normal/bold/italic)
+        // 2. Use fontdue's layout_rasterize to generate bitmap
+        // 3. Return RGBA bitmap data, width, height
+        // For now, placeholder - no actual fonts loaded
         None
+    }
+
+    /// Check if a character is available in current fonts
+    pub fn has_glyph(&self, ch: char) -> bool {
+        // Simple ASCII check for now
+        // In production, would check actual font glyph coverage
+        matches!(ch, '\0' | ' '..='~')
     }
 
     /// Get the width of a specific character in pixels
@@ -218,13 +228,24 @@ mod tests {
     }
 
     #[test]
-    fn test_font_data_retrieval() {
+    fn test_glyph_rasterization() {
         let cache = DrawingCache::new("monospace", 12.0).unwrap();
 
-        // Font data retrieval returns None in basic implementation
-        // (would return actual Font instances in production)
-        let font_data = cache.get_font_data("normal");
-        assert!(font_data.is_none());
+        // Glyph rasterization returns None in basic implementation
+        // (would return bitmap data in production)
+        let bitmap_data = cache.rasterize_glyph('A', "normal");
+        assert!(bitmap_data.is_none());
+    }
+
+    #[test]
+    fn test_glyph_availability() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Test basic ASCII glyph availability (only ASCII is supported in placeholder)
+        assert!(cache.has_glyph('A'), "ASCII letter should be available");
+        assert!(cache.has_glyph(' '), "Space should be available");
+        assert!(cache.has_glyph('\0'), "Null char should be available");
+        assert!(!cache.has_glyph('€'), "Euro symbol should not be available in placeholder");
     }
 
     #[test]

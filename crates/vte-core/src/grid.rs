@@ -181,6 +181,18 @@ impl Grid {
         self.cursor_visible
     }
 
+    /// Select word at the given position
+    pub fn select_word(&mut self, _row: usize, _col: usize) {
+        // TODO: Implement word selection based on Unicode word boundaries
+        // For now, just do nothing safely
+    }
+
+    /// Select line at the given position
+    pub fn select_line(&mut self, _row: usize) {
+        // TODO: Implement line selection
+        // For now, just do nothing safely
+    }
+
     pub fn is_pressed(&self) -> bool {
         self.selection.is_pressed()
     }
