@@ -247,8 +247,20 @@ impl AnsiParser {
                 self.osc_buffer.clear();
                 self.in_osc_escape = false;
             }
-            '(' | ')' | '*' | '+' => {
-                // Charset designation (ESC <designator> <charset>)
+            '(' => {
+                // ESC (<designator> - designate G0 character set
+                self.state = AnsiState::Charset;
+            }
+            ')' => {
+                // ESC )<designator> - designate G1 character set
+                self.state = AnsiState::Charset;
+            }
+            '*' => {
+                // ESC *<designator> - designate G2 character set
+                self.state = AnsiState::Charset;
+            }
+            '+' => {
+                // ESC +<designator> - designate G3 character set
                 self.state = AnsiState::Charset;
             }
             '7' => {

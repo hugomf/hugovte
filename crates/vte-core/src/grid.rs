@@ -35,6 +35,16 @@ pub struct Grid {
     auto_wrap: bool,
     bracketed_paste_mode: bool,
     origin_mode: bool, // DECOM - DEC Origin Mode
+
+    // Character set state (ISO-2022)
+    g0_charset: char,  // G0 character set designator
+    g1_charset: char,  // G1 character set designator
+    g2_charset: char,  // G2 character set designator
+    g3_charset: char,  // G3 character set designator
+    gl_set: u8,        // GL set active (0=G0, 1=G1)
+    gr_set: u8,        // GR set active (2=G2, 3=G3)
+    single_shift: Option<u8>, // Pending single character shift
+
     // Alternate screen flag
     use_alternate_screen: bool,
     // Terminal title
@@ -93,6 +103,16 @@ impl Grid {
             auto_wrap: true,
             bracketed_paste_mode: false,
             origin_mode: false,
+
+            // ISO-2022 character set state - default to US-ASCII (B)
+            g0_charset: 'B',
+            g1_charset: 'B',
+            g2_charset: 'B',
+            g3_charset: 'B',
+            gl_set: 0,  // G0 active
+            gr_set: 2,  // G2 active
+            single_shift: None,
+
             use_alternate_screen: false,
             title: String::new(),
         }
@@ -456,6 +476,64 @@ impl Grid {
         result
     }
 
+    /// Translate character according to current character set
+    fn translate_char(&mut self, ch: char) -> char {
+        // Determine which character set to use for this character
+        let charset_idx = if let Some(shift) = self.single_shift.take() {
+            // One-time shift override - consume it
+            shift
+        } else {
+            // Normal GL/GR determination based on character value
+            match ch as u32 {
+                0..=127 => self.gl_set,  // ASCII range - use GL set
+                _ => self.gr_set,         // Extended range - use GR set
+            }
+        };
+
+        let charset = match charset_idx {
+            0 => self.g0_charset,
+            1 => self.g1_charset,
+            2 => self.g2_charset,
+            3 => self.g3_charset,
+            _ => 'B', // Default to US-ASCII
+        };
+
+        // Apply charset translation
+        match charset {
+            '0' => self.dec_special_graphics(ch),  // DEC Special Graphics
+            _ => ch, // All other charsets: return unchanged for now
+        }
+    }
+
+    /// DEC Special Graphics character mapping
+    /// Converts ASCII characters to box-drawing and symbol equivalents
+    fn dec_special_graphics(&self, ch: char) -> char {
+        match ch {
+            'j' => '\u{256D}', // Box drawing light arc down and right
+            'k' => '\u{256E}', // Box drawing light arc down and left
+            'l' => '\u{256F}', // Box drawing light arc up and right
+            'm' => '\u{2570}', // Box drawing light arc up and left
+            'n' => '\u{253C}', // Box drawing light vertical and horizontal
+            'o' => '\u{23BA}', // Horizontal line (scan line)
+            'p' => '\u{23BB}', // Horizontal line with scan lines
+            'q' => '\u{2500}', // Box drawing light horizontal
+            'r' => '\u{2501}', // Box drawing heavy horizontal
+            's' => '\u{2502}', // Box drawing light vertical
+            't' => '\u{2503}', // Box drawing heavy vertical
+            'u' => '\u{250C}', // Box drawing light down and right
+            'v' => '\u{2510}', // Box drawing light down and left
+            'w' => '\u{2514}', // Box drawing light up and right
+            'x' => '\u{2518}', // Box drawing light up and left
+            'y' => '\u{251C}', // Box drawing light vertical and right
+            'z' => '\u{2524}', // Box drawing light vertical and left
+            '{' => '\u{252C}', // Box drawing light down and horizontal
+            '|' => '\u{2534}', // Box drawing light up and horizontal
+            '}' => '\u{253C}', // Box drawing light vertical and horizontal
+            '~' => '\u{00B7}', // Middle dot
+            _ => ch, // Return original char if no mapping
+        }
+    }
+
     /// Enable or disable alternate screen buffer
     /// When enabled, switches to the alternate buffer and saves state
     /// When disabled, switches back to primary buffer and restores state
@@ -497,6 +575,9 @@ impl AnsiGrid for Grid {
                 self.insert_chars(1);
             }
 
+            // Apply character set translation
+            let translated_ch = self.translate_char(ch);
+
             // Store attributes
             let fg = self.fg;
             let bg = self.bg;
@@ -507,7 +588,7 @@ impl AnsiGrid for Grid {
 
             let cell = self.get_cell_mut(self.row, self.col);
             *cell = Cell {
-                ch,
+                ch: translated_ch,
                 fg,
                 bg,
                 bold,
