@@ -70,7 +70,7 @@ impl DrawingCache {
         }
 
         // Use average width for more consistent character spacing
-        let avg_char_width = total_width / char_count as f64;
+        let _avg_char_width = total_width / char_count as f64;
 
         // For Monaco (monospace font), all characters should have same width
         // Use the width of 'M' as the standard cell width

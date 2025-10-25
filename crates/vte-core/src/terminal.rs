@@ -20,6 +20,7 @@ pub struct VteTerminalCore {
     pub area: DrawingArea,
     pub drawing_cache: DrawingCache,
     pub grid: Arc<RwLock<Grid>>,
+    #[allow(clippy::arc_with_non_send_sync)]
     pty_pair: Arc<RwLock<Option<portable_pty::PtyPair>>>,
 }
 
@@ -27,6 +28,15 @@ impl VteTerminalCore {
     pub fn new() -> Self {
         Self::with_config(TerminalConfig::default())
     }
+}
+
+impl Default for VteTerminalCore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VteTerminalCore {
 
     pub fn with_config(config: TerminalConfig) -> Self {
         eprintln!("INFO: Creating new VteTerminal with config: grid_lines={}, grid_alpha={:.2}",
@@ -144,9 +154,10 @@ impl VteTerminalCore {
         cmd.env("COLORTERM", "truecolor");
         cmd.env("CLICOLOR", "1");
         cmd.env("LSCOLORS", "ExGxFxdxCxDxDxBxBxExEx");
-        
+
         let _child = pair.slave.spawn_command(cmd).expect("Failed to spawn shell");
-        
+
+        #[allow(clippy::arc_with_non_send_sync)]
         Arc::new(RwLock::new(Some(pair)))
     }
 
@@ -282,12 +293,10 @@ impl VteTerminalCore {
                         } else {
                             &default_cell
                         }
+                    } else if absolute_r < scrollback_rows {
+                        &g.scrollback[absolute_r * g.cols + c]
                     } else {
-                        if absolute_r < scrollback_rows {
-                            &g.scrollback[absolute_r * g.cols + c]
-                        } else {
-                            &default_cell
-                        }
+                        &default_cell
                     };
                     let y = r as f64 * char_h;
 

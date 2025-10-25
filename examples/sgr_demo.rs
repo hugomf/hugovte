@@ -121,7 +121,7 @@ impl AnsiGrid for SimpleGrid {
 
     fn newline(&mut self) {
         // Pad to width
-        while self.cursor % self.width != 0 {
+        while !self.cursor.is_multiple_of(self.width) {
             self.advance();
         }
         self.put('\n');
@@ -166,7 +166,7 @@ impl AnsiGrid for SimpleGrid {
     fn get_bg(&self) -> Color { self.current_cell.bg }
 }
 
-fn generate_demo_text(width: usize) -> String {
+fn generate_demo_text(_width: usize) -> String {
     let mut demo = String::new();
 
     // Headers

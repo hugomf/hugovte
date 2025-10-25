@@ -195,15 +195,17 @@ impl InputHandler {
         tx: &async_channel::Sender<()>,
     ) -> bool {
         // copy
-        let copy = (state.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK)
-                   && keyval == gdk::Key::c)
-            || (state.contains(gdk::ModifierType::META_MASK) && keyval == gdk::Key::c);
+        let copy = (state.contains(gdk::ModifierType::META_MASK) ||
+                    state.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK))
+                   && keyval == gdk::Key::c;
         if copy {
             if let Ok(g) = grid.read() {
                 if g.has_selection() {
                     let text = g.get_selected_text();
                     if !text.is_empty() {
-                        gdk::Display::default().map(|d| d.clipboard().set_text(&text));
+                        if let Some(d) = gdk::Display::default() {
+                            d.clipboard().set_text(&text);
+                        }
                     }
 
                 }
@@ -212,9 +214,9 @@ impl InputHandler {
         }
 
         // paste
-        let paste = (state.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK)
-                    && keyval == gdk::Key::v)
-            || (state.contains(gdk::ModifierType::META_MASK) && keyval == gdk::Key::v);
+        let paste = (state.contains(gdk::ModifierType::META_MASK) ||
+                     state.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK))
+                    && keyval == gdk::Key::v;
         if paste {
             let w = writer.clone();
             let t = tx.clone();
