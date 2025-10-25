@@ -11,6 +11,11 @@ pub const DEFAULT_FONT_FAMILY: &str = "Monaco";
 pub const SCROLLBACK_LIMIT: usize = 1000;
 pub const TAB_WIDTH: usize = 4;
 
+// Security constants
+pub const MAX_OSC_LEN: usize = 2048;
+pub const MAX_PARAMS: usize = 32;
+pub const MAX_PARAM_VALUE: u16 = 9999;
+
 // Timing constants
 pub const CURSOR_BLINK_INTERVAL_MS: u64 = 500;
 pub const CLICK_TIMEOUT_MS: u128 = 200;

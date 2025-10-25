@@ -22,6 +22,9 @@ async-channel = "2.5"
 rand = "0.9"
 anyhow = "1.0"
 vte-ansi = { path = "../vte-ansi" }
+unicode-segmentation = "1.10"
+unicode-width = "0.1"
+unicode-bidi = "0.3"
 
 [features]
 default = ["mouse", "selection", "alternate_screen"]

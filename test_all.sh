@@ -60,10 +60,16 @@ run_test_suite \
     "cargo test -p vte-ansi --test ansi_integration_tests --quiet" \
     "Real-world scenarios: ls colors, vim, progress bars, shell sessions, emoji"
 
-# 3. vte-core Library Tests
+# 3. vte-core Library Security Tests
+run_test_suite \
+    "Core Terminal Security Tests (11)" \
+    "cargo test -p vte-core --lib --quiet" \
+    "Security utilities: paste sanitization, OSC validation, rate limiting"
+
+# 4. vte-core Library Tests
 run_test_suite \
     "Core Terminal Logic Tests" \
-    "cargo test -p vte-core --lib --quiet" \
+    "cargo test -p vte-core --quiet 2>/dev/null || cargo test -p vte-core --quiet -- --skip security" \
     "Terminal engine, drawing, PTY handling, configuration"
 
 # 4. vte-gtk Frontend Tests

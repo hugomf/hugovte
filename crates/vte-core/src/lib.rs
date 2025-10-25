@@ -10,6 +10,7 @@ pub mod drawing;
 pub mod error;
 pub mod grid;
 pub mod input;
+pub mod security;
 pub mod selection;
 pub mod terminal;
 
@@ -18,6 +19,7 @@ pub use ansi::{AnsiParser, AnsiGrid, Color, Cell, KeyEvent, MouseEvent};
 pub use config::TerminalConfig;
 pub use error::TerminalError;
 pub use grid::Grid;
+pub use security::{sanitize_paste, validate_osc_sequence, RateLimiter, SecurityConfig};
 pub use terminal::VteTerminalCore;
 
 // Define core traits for backend-agnostic implementation
