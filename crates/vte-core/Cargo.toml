@@ -19,6 +19,7 @@ vte-ansi = { path = "../vte-ansi" }
 unicode-segmentation = "1.10"
 unicode-width = "0.2.2"
 unicode-bidi = "0.3"
+base64 = "0.21.7"
 tracing = { version = "0.1.41", features = ["log"] }
 
 # Temporary minimal dependencies for trait refactoring
@@ -28,7 +29,7 @@ cairo-rs = { version = "0.21", features = ["png"] }
 glib = "0.21"
 
 [features]
-default = ["mouse", "selection", "alternate_screen"]
+default = ["mouse", "selection", "alternate_screen", "font-discovery"]
 mouse = []
 selection = []
 cursor_blink = []
@@ -37,3 +38,10 @@ ime = []
 opengl = []
 kitty = []
 sixel = []
+font-discovery = ["fontconfig"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fontconfig = { version = "0.3", optional = true }
+
+[dev-dependencies]
+libfuzzer-sys = "0.4"

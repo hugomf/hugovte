@@ -9,6 +9,7 @@ pub mod constants;
 pub mod drawing;
 pub mod dummy_backend;
 pub mod error;
+pub mod font;
 pub mod grid;
 pub mod input;
 pub mod security;
