@@ -385,6 +385,7 @@ impl AnsiParser {
                     Some(&1006) => grid.set_mouse_reporting_mode(1006, true),
                     Some(&1004) => grid.set_focus_reporting(true),
                     Some(&2004) => grid.set_bracketed_paste_mode(true),
+                    Some(&6) => grid.set_origin_mode(true), // DECOM - DEC Origin Mode
                     _ => {}
                 }
             }
@@ -1725,9 +1726,20 @@ mod tests {
         // ESC = should set application keypad mode
         p.feed_str("\x1B=", &mut g);
         assert!(g.output.contains("[KEYPAD_MODE_APPLICATION]"));
-        
-        // ESC > should set numeric keypad mode  
+
+        // ESC > should set numeric keypad mode
         p.feed_str("\x1B>", &mut g);
         assert!(g.output.contains("[KEYPAD_MODE_NUMERIC]"));
+    }
+
+    #[test]
+    fn dec_private_modes_origin_mode() {
+        let mut p = AnsiParser::new();
+        let mut g = MockGrid::new();
+
+        // Enable origin mode (DECOM) - CSI ?6h
+        p.feed_str("\x1B[?6h", &mut g);
+        // This should be handled by the grid implementation
+        // No specific output to test, as it's a state change
     }
 }

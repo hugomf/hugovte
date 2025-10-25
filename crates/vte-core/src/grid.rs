@@ -34,6 +34,7 @@ pub struct Grid {
     insert_mode: bool,
     auto_wrap: bool,
     bracketed_paste_mode: bool,
+    origin_mode: bool, // DECOM - DEC Origin Mode
     // Alternate screen flag
     use_alternate_screen: bool,
     // Terminal title
@@ -91,6 +92,7 @@ impl Grid {
             insert_mode: false,
             auto_wrap: true,
             bracketed_paste_mode: false,
+            origin_mode: false,
             use_alternate_screen: false,
             title: String::new(),
         }
@@ -930,6 +932,10 @@ impl AnsiGrid for Grid {
 
     fn set_bracketed_paste_mode(&mut self, enable: bool) {
         self.bracketed_paste_mode = enable;
+    }
+
+    fn set_origin_mode(&mut self, enable: bool) {
+        self.origin_mode = enable;
     }
 
     fn handle_clipboard_data(&mut self, _clipboard_id: u8, _data: &str) {

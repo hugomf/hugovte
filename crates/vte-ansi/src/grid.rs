@@ -152,6 +152,7 @@ pub trait AnsiGrid {
     fn set_application_cursor_keys(&mut self, _enable: bool) {}
     fn set_mouse_reporting_mode(&mut self, _mode: u16, _enable: bool) {}
     fn set_focus_reporting(&mut self, _enable: bool) {}
+    fn set_origin_mode(&mut self, _enable: bool) {}
 
     // Phase-2 OSC sequences
     fn set_current_directory(&mut self, _directory: &str) {}
