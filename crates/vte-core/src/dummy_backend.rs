@@ -381,7 +381,7 @@ mod resource_management_tests {
             click_timeout_ms: 300,
         };
 
-        let terminal = VteTerminalCore::with_config(config);
+        let terminal = VteTerminalCore::with_config(config).expect("Failed to create terminal for testing");
         let memory_info = terminal.get_memory_usage();
 
         // MemoryInfo should have positive values for all buffers
@@ -415,7 +415,7 @@ mod resource_management_tests {
             click_timeout_ms: 300,
         };
 
-        let terminal = VteTerminalCore::with_config(config);
+        let terminal = VteTerminalCore::with_config(config).expect("Failed to create terminal for cleanup testing");
 
         // Get initial memory usage
         let initial_memory = terminal.get_memory_usage();
