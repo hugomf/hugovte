@@ -1,30 +1,36 @@
-// src/terminal.rs
+//! GTK-agnostic terminal core - coordinates PTY, parsing, and grid
+//!
+//! This module provides the core terminal functionality without any UI framework
+//! dependencies. Backend-agnostic rendering and event handling are provided through
+//! trait interfaces defined in lib.rs.
+
 use crate::grid::Grid;
 use crate::ansi::AnsiParser;
 use crate::config::TerminalConfig;
-use crate::drawing::DrawingCache;
-use crate::constants::{SELECTION_BG, GRID_LINE_COLOR};
-use crate::input::InputHandler;
+use crate::error::TerminalError;
+
+use tracing::{error, warn, info, debug, trace};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use gtk4::prelude::*;
-use gtk4::DrawingArea;
-use cairo::{FontSlant, FontWeight};
 use std::sync::{Arc, RwLock, Mutex};
 use std::thread;
 use std::io::{Read, Write};
-use std::time::Duration;
 
-/// Main terminal core - coordinates PTY, parsing, and grid
+/// Backend-agnostic terminal core
+///
+/// Manages PTY process, ANSI/VT parsing, and terminal grid state without
+/// any UI framework dependencies. All rendering and event handling is
+/// delegated to backend implementations via traits.
 pub struct VteTerminalCore {
-    pub area: DrawingArea,
-    pub drawing_cache: DrawingCache,
     pub grid: Arc<RwLock<Grid>>,
-    #[allow(clippy::arc_with_non_send_sync)]
     pty_pair: Arc<RwLock<Option<portable_pty::PtyPair>>>,
+    parser: AnsiParser,
+    redraw_sender: Option<async_channel::Sender<()>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
 }
 
 impl VteTerminalCore {
+    /// Create new terminal core with default configuration
     pub fn new() -> Self {
         Self::with_config(TerminalConfig::default())
     }
@@ -37,108 +43,55 @@ impl Default for VteTerminalCore {
 }
 
 impl VteTerminalCore {
-
+    /// Create new terminal core with specified configuration
     pub fn with_config(config: TerminalConfig) -> Self {
-        eprintln!("INFO: Creating new VteTerminal with config: grid_lines={}, grid_alpha={:.2}",
-                 config.draw_grid_lines, config.grid_line_alpha);
-        let area = DrawingArea::new();
-        area.set_focusable(true);
-        area.grab_focus();
+        debug!("Creating VteTerminalCore with config: font={}, size={}",
+               config.font_family, config.font_size);
 
-        // Create drawing cache
-        let drawing_cache = DrawingCache::new(&config.font_family, config.font_size)
-            .expect("Failed to create drawing cache");
+        let init_cols = 80; // Default dimensions, can be resized later
+        let init_rows = 24;
 
-        let char_w = drawing_cache.char_width();
-        let char_h = drawing_cache.char_height();
-        let ascent = drawing_cache.ascent();
-
-        let init_cols = ((800.0 / char_w).max(1.0) as usize).min(120);
-        let init_rows = ((600.0 / char_h).max(1.0) as usize).min(50);
-        
         // Create grid with config colors
         let mut grid = Grid::new(init_cols, init_rows);
         grid.fg = config.default_fg;
         grid.bg = config.default_bg;
-        
         let grid = Arc::new(RwLock::new(grid));
 
-        // Spawn PTY
-        let pty_pair = Self::spawn_pty(init_cols, init_rows);
-        
-        // Get reader and writer from master PTY
-        let (reader, writer) = {
-            let pair_guard = pty_pair.read().unwrap();
-            let pair = pair_guard.as_ref().unwrap();
-            let reader = pair.master.try_clone_reader().expect("Failed to clone reader");
-            let writer = pair.master.take_writer().expect("Failed to take writer");
-            (reader, writer)
-        };
-
-        let writer_arc: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
-
-        // Redraw channel
-        let (tx, rx) = async_channel::unbounded::<()>();
-        let area_weak = area.downgrade();
-        glib::MainContext::default().spawn_local(async move {
-            while rx.recv().await.is_ok() {
-                if let Some(area) = area_weak.upgrade() {
-                    area.queue_draw();
-                }
-            }
+        // Create parser with error callback
+        let parser = AnsiParser::new().with_error_callback(|err| {
+            warn!("ANSI parser error: {}", err);
         });
 
-        // Start cursor blink timer
-        if config.enable_cursor_blink {
-            Self::start_cursor_blink(Arc::clone(&grid), tx.clone(), config.cursor_blink_interval_ms);
-        }
+        // Create PTY pair
+        let pty_pair = Self::spawn_pty(init_cols, init_rows);
 
-        // Start PTY reader thread
-        Self::start_reader_thread(reader, Arc::clone(&grid), tx.clone());
+        // Get PTY reader/writer
+        let (reader, writer) = Self::setup_pty_handles(&pty_pair);
+        let writer = Arc::new(Mutex::new(writer));
 
-        // Send initial welcome message
-        {
-            let mut w = writer_arc.lock().unwrap();
-            writeln!(w, "echo 'Welcome to HugoTerm!'").unwrap();
-            w.flush().unwrap();
-        }
-        let _ = tx.send_blocking(());
+        // Create redraw channel for backend communication
+        let (redraw_tx, _redraw_rx) = async_channel::unbounded::<()>();
 
-        // Clone config for drawing function to avoid move issues
-        let drawing_config = config.clone();
-        eprintln!("DEBUG: About to pass config to drawing function - grid_lines: {}", drawing_config.draw_grid_lines);
-
-        // Setup drawing
-        Self::setup_drawing(
-            &area,
-            Arc::clone(&grid),
-            Arc::clone(&pty_pair),
-            drawing_cache.clone(),
-            drawing_config,  // Pass cloned config to drawing function
-            char_w,
-            char_h,
-            ascent,
-        );
-
-        // Setup input handlers
-        InputHandler::setup_keyboard(&area, Arc::clone(&grid), Arc::clone(&writer_arc), tx.clone());
-
-        if config.enable_selection {
-            InputHandler::setup_mouse(&area, Arc::clone(&grid), tx.clone(), char_w, char_h);
-        }
-
-        area.queue_draw();
-
-        Self {
-            area,
-            drawing_cache,
-            grid,
+        let core = Self {
+            grid: Arc::clone(&grid),
             pty_pair,
-        }
+            parser,
+            redraw_sender: Some(redraw_tx),
+            writer: Arc::clone(&writer),
+        };
+
+        // Start PTY reader thread and welcome message
+        core.start_pty_reader(reader, Arc::clone(&grid));
+        core.send_welcome_message();
+
+        info!("Terminal core initialized successfully");
+        core
     }
 
-    /// Spawn PTY with bash shell
+    /// Spawn PTY process with configured shell
     fn spawn_pty(cols: usize, rows: usize) -> Arc<RwLock<Option<portable_pty::PtyPair>>> {
+        debug!("Spawning PTY with dimensions {}x{}", cols, rows);
+
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -147,7 +100,7 @@ impl VteTerminalCore {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .expect("Failed to open PTY");
+            .expect("Failed to create PTY");
 
         let mut cmd = CommandBuilder::new("bash");
         cmd.env("TERM", "xterm-256color");
@@ -155,285 +108,263 @@ impl VteTerminalCore {
         cmd.env("CLICOLOR", "1");
         cmd.env("LSCOLORS", "ExGxFxdxCxDxDxBxBxExEx");
 
-        let _child = pair.slave.spawn_command(cmd).expect("Failed to spawn shell");
+        match pair.slave.spawn_command(cmd) {
+            Ok(_) => info!("PTY child process spawned successfully"),
+            Err(e) => {
+                error!("Failed to spawn PTY child process: {}", e);
+                panic!("Terminal startup failed - cannot spawn shell");
+            }
+        }
 
         #[allow(clippy::arc_with_non_send_sync)]
         Arc::new(RwLock::new(Some(pair)))
     }
 
-    /// Start cursor blink timer
-    fn start_cursor_blink(
-        grid: Arc<RwLock<Grid>>,
-        tx: async_channel::Sender<()>,
-        interval_ms: u64,
-    ) {
-        glib::timeout_add_local(Duration::from_millis(interval_ms), move || {
-            if let Ok(mut g) = grid.write() {
-                g.toggle_cursor();
-            }
-            let _ = tx.send_blocking(());
-            glib::ControlFlow::Continue
+    /// Extract reader and writer handles from PTY pair
+    fn setup_pty_handles(pty_pair: &Arc<RwLock<Option<portable_pty::PtyPair>>>) -> (Box<dyn Read + Send>, Box<dyn Write + Send>) {
+        let pair_guard = pty_pair.read().unwrap();
+        let pair = pair_guard.as_ref().unwrap();
+
+        let reader = pair.master.try_clone_reader().unwrap_or_else(|e| {
+            error!("Failed to clone PTY reader: {}", e);
+            panic!("Terminal startup failed - reader unavailable");
         });
+
+        let writer = pair.master.take_writer().unwrap_or_else(|e| {
+            error!("Failed to take PTY writer: {}", e);
+            panic!("Terminal startup failed - writer unavailable");
+        });
+
+        (reader, writer)
     }
 
-    /// Start PTY reader thread
-    fn start_reader_thread(
-        mut reader: Box<dyn Read + Send>,
-        grid: Arc<RwLock<Grid>>,
-        tx: async_channel::Sender<()>,
-    ) {
+    /// Start PTY reader thread to process incoming data
+    fn start_pty_reader(&self, mut reader: Box<dyn Read + Send>, grid: Arc<RwLock<Grid>>) {
+        let writer_pty = Arc::clone(&self.writer);
+        let tx = self.redraw_sender.as_ref().cloned();
+
         thread::spawn(move || {
+            debug!("PTY reader thread starting");
             let mut parser = AnsiParser::new().with_error_callback(|err| {
-                eprintln!("ANSI parser error: {}", err);
+                warn!("ANSI parser error in thread: {}", err);
             });
+
             let mut buf = [0u8; 4096];
+            let mut consecutive_errors = 0;
+
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        debug!("PTY reader: received EOF, shutting down");
+                        break;
+                    }
                     Ok(n) => {
+                        consecutive_errors = 0; // Reset error counter on success
+
                         let acquire_lock = grid.write();
                         match acquire_lock {
                             Ok(mut g) => {
                                 let s = String::from_utf8_lossy(&buf[..n]);
+                                trace!("PTY read {} bytes", n);
                                 parser.feed_str(&s, &mut *g);
+
+                                // Notify backend of redraw
+                                if let Some(ref sender) = tx {
+                                    if let Err(e) = sender.send_blocking(()) {
+                                        warn!("Failed to send redraw signal: {}", e);
+                                    }
+                                }
                             }
                             Err(e) => {
-                                eprintln!("Failed to acquire grid write lock: {}", e);
+                                error!("Failed to acquire grid write lock (attempting recovery): {}", e);
+                                std::thread::sleep(std::time::Duration::from_millis(10));
                                 continue;
                             }
                         }
-                        if let Err(e) = tx.send_blocking(()) {
-                            eprintln!("Failed to send redraw signal: {}", e);
-                        }
                     }
                     Err(e) => {
-                        eprintln!("PTY read error: {}", e);
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    /// Setup drawing function with transparency support
-    #[allow(clippy::too_many_arguments)]
-    fn setup_drawing(
-        area: &DrawingArea,
-        grid: Arc<RwLock<Grid>>,
-        pty_pair: Arc<RwLock<Option<portable_pty::PtyPair>>>,
-        drawing_cache: DrawingCache,
-        config: TerminalConfig,
-        char_w: f64,
-        char_h: f64,
-        ascent: f64,
-    ) {
-        eprintln!("DEBUG: setup_drawing received config - grid_lines: {}", config.draw_grid_lines);
-        area.set_draw_func(move |area, cr, _w, _h| {
-            // CRITICAL: Do NOT clear or paint - preserves transparency
-            
-            let cols = (area.width() as f64 / char_w).max(1.0) as usize;
-            let rows = (area.height() as f64 / char_h).max(1.0) as usize;
-
-            // Handle resize
-            {
-                if let Ok(mut g) = grid.write() {
-                    if g.cols != cols || g.rows != rows {
-                        g.resize(cols, rows);
-                        if let Ok(pair_guard) = pty_pair.read() {
-                            if let Some(ref pair) = *pair_guard {
-                                if let Err(e) = pair.master.resize(PtySize {
-                                    rows: rows as u16,
-                                    cols: cols as u16,
-                                    pixel_width: 0,
-                                    pixel_height: 0,
-                                }) {
-                                    eprintln!("Failed to resize PTY: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let g = grid.read().unwrap();
-
-            // Log when drawing starts (only first time to avoid spam)
-            if cfg!(debug_assertions) {
-                eprintln!("INFO: Starting to draw {}x{} grid", cols, rows);
-                eprintln!("DEBUG: Config in draw function - grid_lines: {}, alpha: {:.2}", config.draw_grid_lines, config.grid_line_alpha);
-            }
-
-            // Calculate scrolling parameters
-            let scrollback_rows = g.scrollback.len() / g.cols;
-            let total_lines = scrollback_rows + g.rows;
-            let start_visible_absolute = if total_lines > g.rows {
-                total_lines - g.rows - g.scroll_offset.min(scrollback_rows)
-            } else {
-                0
-            };
-
-            let default_cell = crate::ansi::Cell {
-                ch: '\0',
-                fg: config.default_fg,
-                bg: config.default_bg,
-                bold: false,
-                italic: false,
-                underline: false,
-                dim: false,
-            };
-
-            // Draw cells with proper font metrics
-            for r in 0..g.rows.min(rows) {
-                let absolute_r = start_visible_absolute + r;
-                for c in 0..g.cols.min(cols) {
-                    let cell = if absolute_r >= scrollback_rows {
-                        let grid_r = absolute_r - scrollback_rows;
-                        if grid_r < g.rows {
-                            g.get_cell(grid_r, c)
+                        consecutive_errors += 1;
+                        if consecutive_errors > 3 {
+                            error!("PTY read failed consecutively {} times, giving up: {}", consecutive_errors, e);
+                            break;
                         } else {
-                            &default_cell
-                        }
-                    } else if absolute_r < scrollback_rows {
-                        &g.scrollback[absolute_r * g.cols + c]
-                    } else {
-                        &default_cell
-                    };
-                    let y = r as f64 * char_h;
-
-                    // Use cell position for background and grid, but character positioning uses font metrics
-                    let cell_x = c as f64 * char_w;
-
-                    // Background (with selection highlight)
-                    if g.is_selected(absolute_r, c) {
-                        cr.set_source_rgba(SELECTION_BG.r, SELECTION_BG.g, SELECTION_BG.b, SELECTION_BG.a);
-                        cr.rectangle(cell_x, y, char_w, char_h);
-                        cr.fill().unwrap();
-                    } else if cell.bg.a > 0.01 {
-                        // Only draw background if it has opacity
-                        cr.set_source_rgba(cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a);
-                        cr.rectangle(cell_x, y, char_w, char_h);
-                        cr.fill().unwrap();
-                    }
-
-                    // Text
-                    if cell.ch != '\0' && cell.ch != ' ' {
-                        cr.set_source_rgb(cell.fg.r, cell.fg.g, cell.fg.b);
-
-                        let slant = if cell.italic { FontSlant::Italic } else { FontSlant::Normal };
-                        let weight = if cell.bold { FontWeight::Bold } else { FontWeight::Normal };
-
-                        if let Some(font) = drawing_cache.get_font(slant, weight) {
-                            cr.set_scaled_font(font);
-
-                            // Use actual font metrics for character positioning
-                            let text = &cell.ch.to_string();
-
-                            // For monospace fonts, use left alignment within each cell
-                            // This gives proper terminal-like character spacing
-                            let pos_x = cell_x;
-
-                            // Debug output for character spacing analysis (first few chars only)
-                            if cfg!(debug_assertions) && c < 3 && r < 5 {
-                                let char_advance = drawing_cache.get_char_advance(cell.ch);
-                                eprintln!("DEBUG: Char '{}' at pos: {:.2}, advance: {:.2}, cell: {:.2}",
-                                    cell.ch, pos_x, char_advance, char_w);
-                            }
-
-                            cr.move_to(pos_x, y + ascent);
-                            cr.show_text(text).unwrap();
-                        }
-                    }
-
-                    // Underline
-                    if cell.underline {
-                        cr.set_source_rgb(cell.fg.r, cell.fg.g, cell.fg.b);
-                        cr.move_to(cell_x, y + char_h - 1.0);
-                        cr.line_to(cell_x + char_w, y + char_h - 1.0);
-                        cr.set_line_width(1.0);
-                        cr.stroke().unwrap();
-                    }
-
-                    // Grid lines (optional) - drawn last so they appear on top
-                    if config.draw_grid_lines {
-                        cr.set_source_rgba(
-                            GRID_LINE_COLOR.r,
-                            GRID_LINE_COLOR.g,
-                            GRID_LINE_COLOR.b,
-                            config.grid_line_alpha,
-                        );
-                        cr.set_line_width(1.0);
-
-                        // Draw vertical lines
-                        cr.move_to(cell_x + char_w, y);
-                        cr.line_to(cell_x + char_w, y + char_h);
-
-                        // Draw horizontal lines
-                        cr.move_to(cell_x, y + char_h);
-                        cr.line_to(cell_x + char_w, y + char_h);
-
-                        cr.stroke().unwrap();
-
-                        // Always log first grid line to verify drawing
-                        if r == 0 && c == 0 {
-                            eprintln!("GRID: Drawing grid line at cell (0,0) - enabled: {}, pos: ({:.1}, {:.1}) to ({:.1}, {:.1})",
-                                config.draw_grid_lines, cell_x + char_w, y, cell_x + char_w, y + char_h);
+                            warn!("PTY read error (attempt {}) - retrying: {}", consecutive_errors, e);
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            continue;
                         }
                     }
                 }
             }
 
-            // Draw cursor (only when not scrolled, as cursor position is relative to grid)
-            if g.row < g.rows && g.col < g.cols && g.is_cursor_visible() && g.scroll_offset == 0 {
-                let cursor_x = g.col as f64 * char_w;
-                let cursor_y = g.row as f64 * char_h;
-                let cursor_cell = g.get_cell(g.row, g.col);
+            info!("PTY reader thread exiting");
+        });
 
-                // Draw cursor as outline
-                cr.set_source_rgb(
-                    1.0 - cursor_cell.bg.r,
-                    1.0 - cursor_cell.bg.g,
-                    1.0 - cursor_cell.bg.b,
-                );
-                let gap_left = 1.5;
-                let gap_top = 0.25;
-                let gap_right = 0.25;
-                let gap_bottom = 0.0;
-                cr.rectangle(cursor_x + gap_left, cursor_y + gap_top, char_w - gap_left - gap_right, char_h - gap_top - gap_bottom);
-                cr.set_line_width(1.0);
-                cr.stroke().unwrap();
+        info!("PTY reader thread started successfully");
+    }
 
-                // Draw cursor cell content
-                if cursor_cell.ch != '\0' && cursor_cell.ch != ' ' {
-                    cr.set_source_rgb(cursor_cell.fg.r, cursor_cell.fg.g, cursor_cell.fg.b);
-                    let slant = if cursor_cell.italic { FontSlant::Italic } else { FontSlant::Normal };
-                    let weight = if cursor_cell.bold { FontWeight::Bold } else { FontWeight::Normal };
+    /// Send welcome message on terminal startup
+    fn send_welcome_message(&self) {
+        let writer_clone = Arc::clone(&self.writer);
+        let grid_clone = Arc::clone(&self.grid);
+        let tx = self.redraw_sender.as_ref().cloned();
 
-                    if let Some(font) = drawing_cache.get_font(slant, weight) {
-                        cr.set_scaled_font(font);
+        thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
 
-                        // Left-align cursor character within its cell for consistent spacing
-                        let text = &cursor_cell.ch.to_string();
+            let mut w = match writer_clone.lock() {
+                Ok(w) => w,
+                Err(e) => {
+                    error!("Failed to acquire writer lock for welcome message: {}", e);
+                    return;
+                }
+            };
 
-                        // Position cursor character at the left edge of its cell
-                        let pos_x = cursor_x;
+            if let Err(e) = writeln!(w, "echo 'Welcome to HugoTerm!'") {
+                warn!("Failed to write welcome message: {}", e);
+            }
+            if let Err(e) = w.flush() {
+                warn!("Failed to flush welcome message: {}", e);
+            }
 
-                        cr.move_to(pos_x, cursor_y + ascent);
-                        cr.show_text(text).unwrap();
-                    }
+            // Notify backend of initial redraw
+            if let Some(ref sender) = tx {
+                if let Err(e) = sender.send_blocking(()) {
+                    warn!("Failed to send initial redraw signal: {}", e);
                 }
             }
         });
     }
 
-    pub fn widget(&self) -> &DrawingArea {
-        &self.area
+    /// Send data to terminal process
+    pub fn send_input(&self, data: &[u8]) -> Result<(), TerminalError> {
+        let mut writer = self.writer.lock()
+            .map_err(|_| TerminalError::GridLockError("Writer lock poisoned".to_string()))?;
+
+        writer.write_all(data).map_err(TerminalError::from)?;
+        writer.flush().map_err(TerminalError::from)?;
+
+        Ok(())
+    }
+
+    /// Resize terminal to new dimensions
+    pub fn resize(&self, cols: usize, rows: usize) {
+        debug!("Resizing terminal to {}x{}", cols, rows);
+
+        // Update grid first
+        if let Ok(mut g) = self.grid.write() {
+            g.resize(cols, rows);
+        } else {
+            warn!("Failed to resize grid - lock error");
+            return;
+        }
+
+        // Update PTY size
+        if let Ok(pair_guard) = self.pty_pair.read() {
+            if let Some(ref pair) = *pair_guard {
+                if let Err(e) = pair.master.resize(PtySize {
+                    rows: rows as u16,
+                    cols: cols as u16,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                }) {
+                    warn!("Failed to resize PTY: {}", e);
+                }
+            }
+        } else {
+            warn!("Could not access PTY for resize");
+        }
+
+        // Notify backend of resize
+        if let Some(ref sender) = self.redraw_sender {
+            if let Err(e) = sender.send_blocking(()) {
+                warn!("Failed to send resize redraw signal: {}", e);
+            }
+        }
+    }
+
+    /// Get access to the terminal grid (read-only)
+    pub fn grid(&self) -> &Arc<RwLock<Grid>> {
+        &self.grid
+    }
+
+    /// Get memory usage statistics
+    pub fn get_memory_usage(&self) -> crate::MemoryInfo {
+        let grid_size = {
+            if let Ok(grid) = self.grid.read() {
+                // Primary buffer memory
+                let primary_bytes = grid.cells.len() * std::mem::size_of::<crate::ansi::Cell>();
+
+                // Alternate buffer memory
+                let alternate_bytes = grid.alternate_cells.len() * std::mem::size_of::<crate::ansi::Cell>();
+
+                // Scrollback buffer memory
+                let scrollback_bytes = grid.scrollback.len() * std::mem::size_of::<crate::ansi::Cell>();
+
+                (primary_bytes, alternate_bytes, scrollback_bytes)
+            } else {
+                (0, 0, 0)
+            }
+        };
+
+        crate::MemoryInfo {
+            primary_buffer_bytes: grid_size.0,
+            alternate_buffer_bytes: grid_size.1,
+            scrollback_buffer_bytes: grid_size.2,
+            total_grid_bytes: grid_size.0 + grid_size.1 + grid_size.2,
+        }
+    }
+
+    /// Force memory cleanup - trim scrollback to configured limits
+    pub fn cleanup_memory(&self) {
+        if let Ok(mut grid) = self.grid.write() {
+            // Trim scrollback to configured limit
+            let max_scroll = crate::constants::SCROLLBACK_LIMIT;
+            if grid.scrollback.len() > max_scroll * grid.cols {
+                let keep_rows = max_scroll;
+                let new_len = keep_rows * grid.cols;
+                grid.scrollback.truncate(new_len);
+                grid.scrollback.shrink_to_fit();
+                debug!("Trimmed scrollback buffer to {} lines", keep_rows);
+            }
+
+            grid.scrollback.shrink_to_fit();
+        } else {
+            warn!("Failed to access grid for memory cleanup");
+        }
+    }
+
+    /// Set redraw callback sender for backend communication
+    pub fn set_redraw_sender(&mut self, sender: async_channel::Sender<()>) {
+        self.redraw_sender = Some(sender);
     }
 }
 
 impl Drop for VteTerminalCore {
     fn drop(&mut self) {
+        info!("Cleaning up VteTerminalCore resources...");
+
+        // Clean up PTY resources (may already be handled by child process termination)
         if let Ok(mut pair_guard) = self.pty_pair.write() {
-            *pair_guard = None;
+            if pair_guard.is_some() {
+                debug!("Dropping PTY pair reference");
+                *pair_guard = None;
+            } else {
+                debug!("PTY pair already cleaned up");
+            }
+        } else {
+            warn!("Failed to clean up PTY pair during drop (lock poisoned)");
         }
+
+        // Force cleanup of Grid resources
+        if let Ok(mut grid) = self.grid.write() {
+            // Clear scrollback buffer to free memory immediately
+            grid.scrollback.clear();
+            grid.scrollback.shrink_to_fit();
+            debug!("Cleared scrollback buffer on drop");
+        } else {
+            warn!("Could not access grid for cleanup during drop");
+        }
+
+        info!("VteTerminalCore resource cleanup completed");
     }
 }

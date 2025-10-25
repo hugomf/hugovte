@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/vte-core", "crates/vte-gtk", "crates/vte-ansi"]
+members = ["crates/vte-core", "crates/vte-gtk4", "crates/vte-ansi"]
 exclude = ["crates/vte-ansi/fuzz"]
 resolver = "2"
 
@@ -14,7 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 vte-core = { path = "crates/vte-core" }
-vte-gtk = { path = "crates/vte-gtk" }
+vte-gtk4 = { path = "crates/vte-gtk4" }
 gtk4 = { version = "0.10.1", package = "gtk4" }
 cairo-rs = { version = "0.21.2", features = ["png"] }
 pango = "0.21.3"

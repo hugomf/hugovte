@@ -7,6 +7,7 @@ pub mod ansi;
 pub mod config;
 pub mod constants;
 pub mod drawing;
+pub mod dummy_backend;
 pub mod error;
 pub mod grid;
 pub mod input;
@@ -37,7 +38,7 @@ pub trait Renderer {
 pub trait TextRenderer {
     fn draw_cell(&mut self, row: usize, col: usize, cell: &Cell);
     fn set_font(&mut self, family: &str, size: f64);
-    fn get_char_metrics(&self, ch: char) -> (f64, f64, f64); // width, height, ascent
+    fn get_char_metrics(&self, ch: char) -> CharMetrics;
 }
 
 /// Graphics rendering sub-trait
@@ -50,6 +51,7 @@ pub trait GraphicsRenderer {
 pub trait UIRenderer {
     fn clear(&mut self);
     fn flush(&mut self);
+    fn set_cursor_shape(&mut self, shape: CursorShape);
 }
 
 /// Input handling trait
@@ -62,12 +64,42 @@ pub trait InputHandler {
 /// Event loop trait
 pub trait EventLoop {
     fn schedule_redraw(&mut self, callback: Box<dyn FnMut()>);
-    fn schedule_timer(&mut self, interval_ms: u64, callback: Box<dyn FnMut() -> bool>);
+    fn schedule_timer(&mut self, interval_ms: u64, callback: Box<dyn FnMut() -> bool>) -> bool;
 }
 
-// Placeholder types for traits
+// Core data structures for backends
+
+/// Character metrics returned by font renderers
+#[derive(Clone, Copy, Debug)]
+pub struct CharMetrics {
+    pub width: f64,
+    pub height: f64,
+    pub ascent: f64,
+}
+
+/// Available cursor shapes for terminals
+#[derive(Clone, Copy, Debug)]
+pub enum CursorShape {
+    /// Solid block cursor
+    Block,
+    /// Underscore cursor
+    Underline,
+    /// Vertical bar cursor
+    Bar,
+}
+
+/// Image data for graphics rendering
 pub struct ImageData {
     pub data: Vec<u8>,
     pub width: usize,
     pub height: usize,
+}
+
+/// Memory usage information
+#[derive(Debug, Clone)]
+pub struct MemoryInfo {
+    pub primary_buffer_bytes: usize,
+    pub alternate_buffer_bytes: usize,
+    pub scrollback_buffer_bytes: usize,
+    pub total_grid_bytes: usize,
 }

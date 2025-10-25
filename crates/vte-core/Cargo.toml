@@ -13,18 +13,19 @@ categories = ["command-line-interface", "emulators"]
 portable-pty = "0.9"
 fontdue = "0.9"
 memchr = "2.7"
-thiserror = "1.0"
-gtk4 = "0.10"
-cairo-rs = { version = "0.21", features = ["png"] }
-pango = "0.21"
-glib = "0.21"
-async-channel = "2.5"
-rand = "0.9"
+thiserror = "2.0.17"
 anyhow = "1.0"
 vte-ansi = { path = "../vte-ansi" }
 unicode-segmentation = "1.10"
-unicode-width = "0.1"
+unicode-width = "0.2.2"
 unicode-bidi = "0.3"
+tracing = { version = "0.1.41", features = ["log"] }
+
+# Temporary minimal dependencies for trait refactoring
+async-channel = "2.5"
+gtk4 = "0.10"
+cairo-rs = { version = "0.21", features = ["png"] }
+glib = "0.21"
 
 [features]
 default = ["mouse", "selection", "alternate_screen"]

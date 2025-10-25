@@ -8,10 +8,16 @@ pub struct Grid {
     pub cols: usize,
     pub rows: usize,
     pub cells: Vec<Cell>, // Flat storage for better cache locality
-    pub scrollback: Vec<Cell>, // Also flat storage
+    pub alternate_cells: Vec<Cell>, // Alternate screen buffer
+    pub scrollback: Vec<Cell>, // Also flat storage (primary buffer only)
     pub scroll_offset: usize,
     pub col: usize,
     pub row: usize,
+    // Alternate screen state
+    primary_cursor: (usize, usize), // Saved for alternate screen
+    alternate_cursor: (usize, usize), // Primary screen cursor
+    primary_attrs: (Color, Color, bool, bool, bool, bool), // fg, bg, bold, italic, underline, dim
+    alternate_attrs: (Color, Color, bool, bool, bool, bool), // fg, bg, bold, italic, underline, dim
     pub fg: Color,
     pub bg: Color,
     bold: bool,
@@ -27,6 +33,8 @@ pub struct Grid {
     // Terminal modes
     insert_mode: bool,
     auto_wrap: bool,
+    // Alternate screen flag
+    use_alternate_screen: bool,
     // Terminal title
     title: String,
 }
@@ -47,14 +55,29 @@ impl Grid {
     pub fn new(cols: usize, rows: usize) -> Self {
         let total_cells = cols * rows;
         let cells = vec![Self::default_cell(); total_cells];
+        let alternate_cells = vec![Self::default_cell(); total_cells];
         Self {
             cols,
             rows,
             cells,
+            alternate_cells,
             scrollback: Vec::new(),
             scroll_offset: 0,
             col: 0,
             row: 0,
+            // Alternate screen state - initially on primary
+            primary_cursor: (0, 0),
+            alternate_cursor: (0, 0),
+            primary_attrs: (
+                crate::constants::DEFAULT_FG,
+                crate::constants::DEFAULT_BG,
+                false, false, false, false  // bold, italic, underline, dim
+            ),
+            alternate_attrs: (
+                crate::constants::DEFAULT_FG,
+                crate::constants::DEFAULT_BG,
+                false, false, false, false  // bold, italic, underline, dim
+            ),
             fg: crate::constants::DEFAULT_FG,
             bg: crate::constants::DEFAULT_BG,
             bold: false,
@@ -66,21 +89,40 @@ impl Grid {
             cursor_stack: Vec::new(),
             insert_mode: false,
             auto_wrap: true,
+            use_alternate_screen: false,
             title: String::new(),
         }
     }
 
-    // Flat array accessors
+    // Get the active cell buffer (primary or alternate)
+    fn active_cells(&self) -> &[Cell] {
+        if self.use_alternate_screen {
+            &self.alternate_cells
+        } else {
+            &self.cells
+        }
+    }
+
+    fn active_cells_mut(&mut self) -> &mut Vec<Cell> {
+        if self.use_alternate_screen {
+            &mut self.alternate_cells
+        } else {
+            &mut self.cells
+        }
+    }
+
+    // Flat array accessors - work on active buffer
     pub fn get_cell(&self, row: usize, col: usize) -> &Cell {
-        &self.cells[row * self.cols + col]
+        &self.active_cells()[row * self.cols + col]
     }
 
     pub fn get_cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
-        &mut self.cells[row * self.cols + col]
+        let idx = row * self.cols + col;
+        &mut self.active_cells_mut()[idx]
     }
 
     pub fn clear(&mut self) {
-        self.cells.fill(Self::default_cell());
+        self.active_cells_mut().fill(Self::default_cell());
         self.col = 0;
         self.row = 0;
         self.scrollback.clear();
@@ -90,18 +132,23 @@ impl Grid {
 
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
         let new_total = new_cols * new_rows;
-        let mut new_cells = vec![Self::default_cell(); new_total];
 
-        // Copy existing content
+        // Resize both primary and alternate buffers
+        let mut new_cells = vec![Self::default_cell(); new_total];
+        let mut new_alternate_cells = vec![Self::default_cell(); new_total];
+
+        // Copy existing content for both buffers
         for r in 0..self.rows.min(new_rows) {
             for c in 0..self.cols.min(new_cols) {
                 let old_idx = r * self.cols + c;
                 let new_idx = r * new_cols + c;
                 new_cells[new_idx] = self.cells[old_idx];
+                new_alternate_cells[new_idx] = self.alternate_cells[old_idx];
             }
         }
 
         self.cells = new_cells;
+        self.alternate_cells = new_alternate_cells;
         self.cols = new_cols;
         self.rows = new_rows;
         self.col = self.col.min(new_cols.saturating_sub(1));
@@ -160,7 +207,7 @@ impl Grid {
         };
 
         let total_rows = self.scrollback.len() / self.cols + self.rows;
-        
+
         if start_row >= total_rows || end_row >= total_rows {
             return String::new();
         }
@@ -169,17 +216,17 @@ impl Grid {
 
         for row in start_row..=end_row {
             let line = if row < self.scrollback.len() / self.cols {
-                // Scrollback row
+                // Scrollback row (always from primary)
                 let start_idx = row * self.cols;
                 let end_idx = start_idx + self.cols;
                 &self.scrollback[start_idx..end_idx]
             } else {
-                // Grid row
+                // Grid row (from active buffer)
                 let grid_row = row - self.scrollback.len() / self.cols;
                 if grid_row < self.rows {
                     let start_idx = grid_row * self.cols;
                     let end_idx = start_idx + self.cols;
-                    &self.cells[start_idx..end_idx]
+                    &self.active_cells()[start_idx..end_idx]
                 } else {
                     continue;
                 }
@@ -199,6 +246,39 @@ impl Grid {
         }
 
         result
+    }
+
+    /// Enable or disable alternate screen buffer
+    /// When enabled, switches to the alternate buffer and saves state
+    /// When disabled, switches back to primary buffer and restores state
+    pub fn use_alternate_screen(&mut self, enable: bool) {
+        if self.use_alternate_screen == enable {
+            return; // No change needed
+        }
+
+        if enable {
+            // Switch TO alternate screen - save primary state
+            self.primary_cursor = (self.row, self.col);
+            self.primary_attrs = (
+                self.fg, self.bg,
+                self.bold, self.italic, self.underline, self.dim
+            );
+            // Switch to alternate state
+            self.use_alternate_screen = true;
+            (self.row, self.col) = self.alternate_cursor;
+            (self.fg, self.bg, self.bold, self.italic, self.underline, self.dim) = self.alternate_attrs;
+        } else {
+            // Switch FROM alternate screen - save alternate state
+            self.alternate_cursor = (self.row, self.col);
+            self.alternate_attrs = (
+                self.fg, self.bg,
+                self.bold, self.italic, self.underline, self.dim
+            );
+            // Switch to primary state
+            self.use_alternate_screen = false;
+            (self.row, self.col) = self.primary_cursor;
+            (self.fg, self.bg, self.bold, self.italic, self.underline, self.dim) = self.primary_attrs;
+        }
     }
 }
 
@@ -316,7 +396,7 @@ impl AnsiGrid for Grid {
         let default = Self::default_cell();
         let start_idx = self.row * self.cols;
         for i in 0..self.cols {
-            self.cells[start_idx + i] = default;
+            self.active_cells_mut()[start_idx + i] = default;
         }
     }
 
@@ -325,7 +405,7 @@ impl AnsiGrid for Grid {
         let start_idx = self.row * self.cols + self.col;
         let end_idx = (self.row + 1) * self.cols;
         for i in start_idx..end_idx {
-            self.cells[i] = default;
+            self.active_cells_mut()[i] = default;
         }
     }
 
@@ -334,7 +414,7 @@ impl AnsiGrid for Grid {
         let start_idx = self.row * self.cols;
         let end_idx = self.row * self.cols + self.col + 1;
         for i in start_idx..end_idx {
-            self.cells[i] = default;
+            self.active_cells_mut()[i] = default;
         }
     }
 
@@ -345,7 +425,7 @@ impl AnsiGrid for Grid {
         let start_idx = (self.row + 1) * self.cols;
         let end_idx = self.rows * self.cols;
         for i in start_idx..end_idx {
-            self.cells[i] = default;
+            self.active_cells_mut()[i] = default;
         }
     }
 
@@ -355,7 +435,7 @@ impl AnsiGrid for Grid {
         let default = Self::default_cell();
         let end_idx = self.row * self.cols;
         for i in 0..end_idx {
-            self.cells[i] = default;
+            self.active_cells_mut()[i] = default;
         }
     }
 
@@ -424,18 +504,28 @@ impl AnsiGrid for Grid {
             return;
         }
 
+        let cols = self.cols; // Avoid borrowing issues with self.cols
+
         // Move content up by n rows
         for r in 0..(self.rows - n) {
-            let src_start = (r + n) * self.cols;
-            let dst_start = r * self.cols;
-            self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+            let src_start = (r + n) * cols;
+            let dst_start = r * cols;
+            if self.use_alternate_screen {
+                self.alternate_cells.copy_within(src_start..(src_start + cols), dst_start);
+            } else {
+                self.cells.copy_within(src_start..(src_start + cols), dst_start);
+            }
         }
 
         // Clear bottom n rows
         for r in (self.rows - n)..self.rows {
-            for c in 0..self.cols {
-                let idx = r * self.cols + c;
-                self.cells[idx] = Self::default_cell();
+            for c in 0..cols {
+                let idx = r * cols + c;
+                if self.use_alternate_screen {
+                    self.alternate_cells[idx] = Self::default_cell();
+                } else {
+                    self.cells[idx] = Self::default_cell();
+                }
             }
         }
     }
@@ -449,18 +539,28 @@ impl AnsiGrid for Grid {
             return;
         }
 
+        let cols = self.cols; // Avoid borrowing issues with self.cols
+
         // Move content down by n rows
         for r in (0..(self.rows - n)).rev() {
-            let dst_start = (r + n) * self.cols;
-            let src_start = r * self.cols;
-            self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+            let dst_start = (r + n) * cols;
+            let src_start = r * cols;
+            if self.use_alternate_screen {
+                self.alternate_cells.copy_within(src_start..(src_start + cols), dst_start);
+            } else {
+                self.cells.copy_within(src_start..(src_start + cols), dst_start);
+            }
         }
 
         // Clear top n rows
         for r in 0..n {
-            for c in 0..self.cols {
-                let idx = r * self.cols + c;
-                self.cells[idx] = Self::default_cell();
+            for c in 0..cols {
+                let idx = r * cols + c;
+                if self.use_alternate_screen {
+                    self.alternate_cells[idx] = Self::default_cell();
+                } else {
+                    self.cells[idx] = Self::default_cell();
+                }
             }
         }
     }
@@ -470,21 +570,30 @@ impl AnsiGrid for Grid {
             return;
         }
         let n_clamped = n.min(self.rows - self.row);
-
-        // Shift rows below current row down by n_clamped
+        let cols = self.cols; // Avoid borrowing issues with self.cols
         let start_row = self.row;
         let end_row = self.rows - n_clamped;
+
+        // Shift rows below current row down by n_clamped
         for r in (start_row..end_row).rev() {
-            let dst_start = (r + n_clamped) * self.cols;
-            let src_start = r * self.cols;
-            self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+            let dst_start = (r + n_clamped) * cols;
+            let src_start = r * cols;
+            if self.use_alternate_screen {
+                self.alternate_cells.copy_within(src_start..(src_start + cols), dst_start);
+            } else {
+                self.cells.copy_within(src_start..(src_start + cols), dst_start);
+            }
         }
 
         // Clear inserted rows
         for r in start_row..(start_row + n_clamped) {
-            for c in 0..self.cols {
-                let idx = r * self.cols + c;
-                self.cells[idx] = Self::default_cell();
+            for c in 0..cols {
+                let idx = r * cols + c;
+                if self.use_alternate_screen {
+                    self.alternate_cells[idx] = Self::default_cell();
+                } else {
+                    self.cells[idx] = Self::default_cell();
+                }
             }
         }
     }
@@ -494,20 +603,29 @@ impl AnsiGrid for Grid {
             return;
         }
         let n_clamped = n.min(self.rows - self.row);
-
-        // Shift rows up by n_clamped
+        let cols = self.cols; // Avoid borrowing issues with self.cols
         let start_row = self.row;
         let end_row = self.rows;
+
+        // Shift rows up by n_clamped
         for r in start_row..end_row {
             if r + n_clamped < self.rows {
-                let dst_start = r * self.cols;
-                let src_start = (r + n_clamped) * self.cols;
-                self.cells.copy_within(src_start..(src_start + self.cols), dst_start);
+                let dst_start = r * cols;
+                let src_start = (r + n_clamped) * cols;
+                if self.use_alternate_screen {
+                    self.alternate_cells.copy_within(src_start..(src_start + cols), dst_start);
+                } else {
+                    self.cells.copy_within(src_start..(src_start + cols), dst_start);
+                }
             } else {
                 // Clear row
-                for c in 0..self.cols {
-                    let idx = r * self.cols + c;
-                    self.cells[idx] = Self::default_cell();
+                for c in 0..cols {
+                    let idx = r * cols + c;
+                    if self.use_alternate_screen {
+                        self.alternate_cells[idx] = Self::default_cell();
+                    } else {
+                        self.cells[idx] = Self::default_cell();
+                    }
                 }
             }
         }
@@ -519,16 +637,36 @@ impl AnsiGrid for Grid {
         }
         let n_clamped = n.min(self.cols - self.col);
         let row_start = self.row * self.cols;
-        let end_col = self.cols - n_clamped;
+        let insert_pos = self.col;
+        let row_end = self.cols;
 
-        // Shift right from cursor to end of row
-        for idx in (row_start + self.col..row_start + end_col).rev() {
-            self.cells[idx + n_clamped] = self.cells[idx];
+        // Shift characters to the right starting from cursor position
+        // Work backwards to avoid overwriting
+        for pos in ((insert_pos)..row_end).rev() {
+            let src_idx = row_start + pos;
+            let dst_idx = row_start + pos + n_clamped;
+            if dst_idx < row_start + row_end {
+                let value = if self.use_alternate_screen {
+                    self.alternate_cells[src_idx]
+                } else {
+                    self.cells[src_idx]
+                };
+                if self.use_alternate_screen {
+                    self.alternate_cells[dst_idx] = value;
+                } else {
+                    self.cells[dst_idx] = value;
+                }
+            }
         }
 
         // Clear inserted chars
-        for idx in row_start + self.col..row_start + self.col + n_clamped {
-            self.cells[idx] = Self::default_cell();
+        for pos in insert_pos..insert_pos + n_clamped {
+            let idx = row_start + pos;
+            if self.use_alternate_screen {
+                self.alternate_cells[idx] = Self::default_cell();
+            } else {
+                self.cells[idx] = Self::default_cell();
+            }
         }
     }
 
@@ -544,12 +682,20 @@ impl AnsiGrid for Grid {
         for idx in self.col..end_col {
             let src = row_start + idx + n_clamped;
             let dst = row_start + idx;
-            self.cells[dst] = self.cells[src];
+            if self.use_alternate_screen {
+                self.alternate_cells[dst] = self.alternate_cells[src];
+            } else {
+                self.cells[dst] = self.cells[src];
+            }
         }
 
         // Clear end of line
         for idx in row_start + end_col..row_start + self.cols {
-            self.cells[idx] = Self::default_cell();
+            if self.use_alternate_screen {
+                self.alternate_cells[idx] = Self::default_cell();
+            } else {
+                self.cells[idx] = Self::default_cell();
+            }
         }
     }
 
@@ -560,7 +706,7 @@ impl AnsiGrid for Grid {
         let row_start = self.row * self.cols;
         let end_idx = (self.col + n).min(self.cols);
         for idx in row_start + self.col..row_start + end_idx {
-            self.cells[idx] = Self::default_cell();
+            self.active_cells_mut()[idx] = Self::default_cell();
         }
     }
 
@@ -574,5 +720,369 @@ impl AnsiGrid for Grid {
 
     fn set_title(&mut self, title: &str) {
         self.title = title.to_string();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ansi::Cell;
+    use crate::constants::{DEFAULT_FG, DEFAULT_BG};
+
+    #[test]
+    fn test_grid_creation() {
+        let grid = Grid::new(80, 24);
+        assert_eq!(grid.cols, 80);
+        assert_eq!(grid.rows, 24);
+        assert_eq!(grid.cells.len(), 80 * 24);
+        assert_eq!(grid.alternate_cells.len(), 80 * 24);
+        assert_eq!(grid.col, 0);
+        assert_eq!(grid.row, 0);
+        assert!(!grid.use_alternate_screen);
+        assert!(grid.scrollback.is_empty());
+    }
+
+    #[test]
+    fn test_grid_resize() {
+        let mut grid = Grid::new(80, 24);
+
+        // Fill first few cells with test data
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(0, 1) = Cell { ch: 'B', ..Default::default() };
+
+        // Resize larger
+        grid.resize(100, 30);
+        assert_eq!(grid.cols, 100);
+        assert_eq!(grid.rows, 30);
+        assert_eq!(grid.cells.len(), 100 * 30);
+
+        // Check content is preserved
+        assert_eq!(grid.get_cell(0, 0).ch, 'A');
+        assert_eq!(grid.get_cell(0, 1).ch, 'B');
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut grid = Grid::new(10, 10);
+
+        // Test absolute movement
+        grid.move_abs(5, 7);
+        assert_eq!(grid.row, 5);
+        assert_eq!(grid.col, 7);
+
+        // Test movement with bounds clamping
+        grid.move_abs(15, 15); // Should clamp to max
+        assert_eq!(grid.row, 9);
+        assert_eq!(grid.col, 9);
+
+        // Test relative movement
+        grid.move_rel(5, 5); // Should clamp
+        assert_eq!(grid.row, 9);
+        assert_eq!(grid.col, 9);
+
+        grid.move_rel(-10, -10); // Should clamp to 0
+        assert_eq!(grid.row, 0);
+        assert_eq!(grid.col, 0);
+    }
+
+    #[test]
+    fn test_cell_writing_and_reading() {
+        let mut grid = Grid::new(10, 10);
+
+        // Write a character
+        let test_cell = Cell {
+            ch: 'X',
+            fg: Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
+            bg: Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+            bold: true,
+            italic: false,
+            underline: false,
+            dim: false,
+        };
+
+        *grid.get_cell_mut(1, 2) = test_cell.clone();
+
+        // Read it back
+        let read_cell = grid.get_cell(1, 2);
+        assert_eq!(read_cell.ch, 'X');
+        assert_eq!(read_cell.fg, test_cell.fg);
+        assert_eq!(read_cell.bg, test_cell.bg);
+        assert_eq!(read_cell.bold, true);
+        assert_eq!(read_cell.italic, false);
+    }
+
+    #[test]
+    fn test_clear_operations() {
+        let mut grid = Grid::new(5, 5);
+
+        // Put some content
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(0, 1) = Cell { ch: 'B', ..Default::default() };
+        grid.col = 1;
+        grid.row = 2;
+
+        // Clear line
+        grid.clear_line();
+        assert_eq!(grid.get_cell(2, 0).ch, '\0');
+        assert_eq!(grid.get_cell(2, 1).ch, '\0');
+
+        // Clear screen should reset cursor and clear content
+        grid.clear_screen();
+        assert_eq!(grid.col, 0);
+        assert_eq!(grid.row, 0);
+        assert!(grid.scrollback.is_empty());
+    }
+
+    #[test]
+    fn test_scroll_operations() {
+        let mut grid = Grid::new(5, 3);
+
+        // Put content in rows 0, 1, 2
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(1, 0) = Cell { ch: 'B', ..Default::default() };
+        *grid.get_cell_mut(2, 0) = Cell { ch: 'C', ..Default::default() };
+
+        // Scroll up by 1 - moves rows up within grid, bottom row clears
+        // Note: scroll_up/down are for V/T compatibility, not content scrolling
+        grid.scroll_up(1);
+
+        // Row 0 (former row 1) should have B
+        assert_eq!(grid.get_cell(0, 0).ch, 'B');
+
+        // Row 1 (former row 2) should have C
+        assert_eq!(grid.get_cell(1, 0).ch, 'C');
+
+        // Row 2 (scrolled up) should be cleared
+        assert_eq!(grid.get_cell(2, 0).ch, '\0');
+
+        // Scroll operations don't create scrollback (only newlines do)
+        assert!(grid.scrollback.is_empty());
+    }
+
+    #[test]
+    fn test_scroll_down() {
+        let mut grid = Grid::new(5, 3);
+
+        // Put content in all rows
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(1, 0) = Cell { ch: 'B', ..Default::default() };
+        *grid.get_cell_mut(2, 0) = Cell { ch: 'C', ..Default::default() };
+
+        // Scroll down by 1 - C->B, B->A, top row clears
+        grid.scroll_down(1);
+
+        // Row 1 should have A
+        assert_eq!(grid.get_cell(1, 0).ch, 'A');
+        // Row 2 should have B (moved from row 1)
+        assert_eq!(grid.get_cell(2, 0).ch, 'B');
+        // Row 0 should be cleared
+        assert_eq!(grid.get_cell(0, 0).ch, '\0');
+    }
+
+    #[test]
+    fn test_line_operations() {
+        let mut grid = Grid::new(5, 5);
+
+        // Put content in a line
+        grid.row = 2;
+        *grid.get_cell_mut(2, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(2, 1) = Cell { ch: 'B', ..Default::default() };
+        *grid.get_cell_mut(2, 4) = Cell { ch: 'E', ..Default::default() };
+
+        // Insert lines (should shift down from current row)
+        grid.insert_lines(1);
+        // Row 3 should now have A, B, E
+        assert_eq!(grid.get_cell(3, 0).ch, 'A');
+        assert_eq!(grid.get_cell(3, 1).ch, 'B');
+        assert_eq!(grid.get_cell(3, 4).ch, 'E');
+        // Row 2 should be cleared (inserted line)
+        assert_eq!(grid.get_cell(2, 0).ch, '\0');
+
+        // Delete lines (should shift up from current row)
+        grid.row = 2;
+        grid.delete_lines(1);
+        // Row 2 should now have the content from row 3
+        assert_eq!(grid.get_cell(2, 0).ch, 'A');
+        assert_eq!(grid.get_cell(2, 1).ch, 'B');
+    }
+
+    #[test]
+    fn test_character_operations() {
+        let mut grid = Grid::new(5, 5);
+        grid.row = 1;
+
+        // Put characters: [A, B, C]
+        // Keep it simple - only use positions 0, 1, 2 to avoid overflow
+        *grid.get_cell_mut(1, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(1, 1) = Cell { ch: 'B', ..Default::default() };
+        *grid.get_cell_mut(1, 2) = Cell { ch: 'C', ..Default::default() };
+
+        // Verify initial state
+        assert_eq!(grid.get_cell(1, 0).ch, 'A');
+        assert_eq!(grid.get_cell(1, 1).ch, 'B');
+        assert_eq!(grid.get_cell(1, 2).ch, 'C');
+
+        // Insert characters at position 1 (between 'A' and 'B')
+        grid.col = 1;
+        grid.insert_chars(1);
+
+        // Should insert 1 empty char at cursor, shifting right
+        // [A, B, C] with insert at pos 1 becomes [A, ∅, B] (C still at pos 2)
+        assert_eq!(grid.get_cell(1, 0).ch, 'A'); // Original A unchanged
+        assert_eq!(grid.get_cell(1, 1).ch, '\0'); // Inserted empty
+        assert_eq!(grid.get_cell(1, 2).ch, 'B'); // B moved from pos 1 to pos 2, C still at pos 2? Wait, this doesn't make sense
+
+        // Wait, correct logic: with cursor at position 1 in [A, B, C]:
+        // insert_chars(1) should insert empty at cursor: [A, ∅, B, C] then truncate to [A, ∅, B]
+
+        assert_eq!(grid.get_cell(1, 0).ch, 'A');
+        assert_eq!(grid.get_cell(1, 1).ch, '\0'); // Inserted empty
+        assert_eq!(grid.get_cell(1, 2).ch, 'B'); // B moved to pos 2 from pos 1
+        // C is lost (pushed off the end)
+    }
+
+    #[test]
+    fn test_alternate_screen() {
+        let mut grid = Grid::new(3, 3);
+
+        // Put content on primary screen
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'P', ..Default::default() };
+        *grid.get_cell_mut(1, 1) = Cell { ch: 'R', ..Default::default() };
+
+        // Switch to alternate screen
+        grid.use_alternate_screen(true);
+        assert!(grid.use_alternate_screen);
+
+        // Put different content on alternate screen
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+        *grid.get_cell_mut(1, 1) = Cell { ch: 'L', ..Default::default() };
+
+        assert_eq!(grid.get_cell(0, 0).ch, 'A');
+        assert_eq!(grid.get_cell(1, 1).ch, 'L');
+
+        // Switch back to primary screen
+        grid.use_alternate_screen(false);
+        assert!(!grid.use_alternate_screen);
+
+        // Original content should be preserved
+        assert_eq!(grid.get_cell(0, 0).ch, 'P');
+        assert_eq!(grid.get_cell(1, 1).ch, 'R');
+    }
+
+    #[test]
+    fn test_cursor_save_restore() {
+        let mut grid = Grid::new(10, 10);
+
+        // Move cursor
+        grid.move_abs(5, 7);
+        assert_eq!(grid.row, 5);
+        assert_eq!(grid.col, 7);
+
+        // Save cursor
+        grid.save_cursor();
+
+        // Move cursor again
+        grid.move_abs(1, 2);
+        assert_eq!(grid.row, 1);
+        assert_eq!(grid.col, 2);
+
+        // Restore cursor
+        grid.restore_cursor();
+        assert_eq!(grid.row, 5);
+        assert_eq!(grid.col, 7);
+    }
+
+    #[test]
+    fn test_attribute_management() {
+        let mut grid = Grid::new(5, 5);
+
+        // Test setting attributes
+        grid.set_bold(true);
+        grid.set_fg(Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
+        grid.set_bg(Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 });
+
+        assert_eq!(grid.get_fg(), Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
+        assert_eq!(grid.get_bg(), Color { r: 0.0, g: 1.0, b: 0.0, a: 1.0 });
+
+        // Reset attributes
+        grid.reset_attrs();
+        assert_eq!(grid.get_fg().r, DEFAULT_FG.r);
+        assert_eq!(grid.get_bg().r, DEFAULT_BG.r);
+    }
+
+    #[test]
+    fn test_newline_with_scrollback() {
+        let mut grid = Grid::new(3, 2); // Small grid to trigger scrolling easily
+
+        // Fill the screen
+        grid.put('A'); grid.advance();
+        grid.put('B'); grid.newline();
+        grid.put('C'); grid.advance();
+        grid.put('D'); grid.newline(); // This should cause scroll
+
+        // Should have scrolled A from row 0 to scrollback
+        assert_eq!(grid.scrollback[0].ch, 'A');
+        assert_eq!(grid.scrollback[1].ch, 'B');
+
+        // Row 0 should now have C D
+        assert_eq!(grid.get_cell(0, 0).ch, 'C');
+        assert_eq!(grid.get_cell(0, 1).ch, 'D');
+
+        // Row 1 should be at cursor
+        assert_eq!(grid.row, 1);
+        assert_eq!(grid.col, 0);
+    }
+
+    #[test]
+    fn test_selection_integration() {
+        let mut grid = Grid::new(5, 5);
+
+        // Start selection
+        grid.start_selection(1, 2);
+        assert!(grid.is_pressed());
+
+        // Update selection (start dragging)
+        grid.update_selection(3, 4);
+        assert!(grid.is_dragging());
+        assert!(grid.is_selecting());
+
+        // Complete selection
+        let completed = grid.complete_selection(3, 4);
+        assert!(completed);
+        assert!(grid.has_selection());
+        assert!(!grid.is_selecting());
+    }
+
+    #[test]
+    fn test_resize_with_bounds_clamping() {
+        let mut grid = Grid::new(10, 10);
+
+        // Put cursor near the edge
+        grid.move_abs(8, 8);
+
+        // Resize smaller
+        grid.resize(5, 5);
+
+        // Cursor should be clamped to new bounds
+        assert_eq!(grid.row, 4); // 8 clamped to 4
+        assert_eq!(grid.col, 4); // 8 clamped to 4
+        assert_eq!(grid.rows, 5);
+        assert_eq!(grid.cols, 5);
+    }
+
+    #[test]
+    fn test_cursor_blink() {
+        let mut grid = Grid::new(5, 5);
+
+        // Initially visible
+        assert!(grid.is_cursor_visible());
+
+        // Toggle
+        grid.toggle_cursor();
+        assert!(!grid.is_cursor_visible());
+
+        // Toggle back
+        grid.toggle_cursor();
+        assert!(grid.is_cursor_visible());
     }
 }

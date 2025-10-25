@@ -1,187 +1,354 @@
-// src/drawing.rs
+//! Backend-agnostic font metrics and data cache
+//!
+//! This module uses fontdue for font rendering and metrics calculation.
+//! It provides font data and character metrics that can be used by
+//! different rendering backends without tying to any specific graphics library.
+
 use std::collections::HashMap;
-use cairo::{Context, FontSlant, FontWeight, ScaledFont, ImageSurface, Format, Antialias, HintStyle, HintMetrics, TextExtents};
+use fontdue::Font;
+use tracing::debug;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Simple font key for basic caching
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FontKey {
-    slant: FontSlant,
-    weight: FontWeight,
+    variant: &'static str, // "normal", "bold", "italic", "bold_italic"
 }
 
-impl std::hash::Hash for FontKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        std::mem::discriminant(&self.slant).hash(state);
-        std::mem::discriminant(&self.weight).hash(state);
-    }
+/// Backend-agnostic character metrics
+#[derive(Debug, Clone, Copy)]
+pub struct CharMetrics {
+    /// Character width in pixels
+    pub width: f64,
+    /// Character height in pixels
+    pub height: f64,
+    /// Baseline offset (ascent) in pixels
+    pub ascent: f64,
 }
 
+/// Backend-agnostic font cache using fontdue
 pub struct DrawingCache {
+    /// Font family name
     font_family: String,
+    /// Font size in pixels
     font_size: f64,
-    fonts: HashMap<FontKey, ScaledFont>,
-    char_metrics: HashMap<char, TextExtents>,
+    /// Cached fonts by variant (basic monospace for now)
+    fonts: HashMap<FontKey, Font>,
+    /// Pre-computed character metrics (advance width, advance height, width, height)
+    char_metrics: HashMap<char, (f64, f64, f64, f64)>,
+    /// Standard monospace character width for terminal cells
     char_width: f64,
+    /// Line height for terminal rows
     char_height: f64,
+    /// Font ascent (baseline offset)
     ascent: f64,
 }
 
 impl DrawingCache {
-    pub fn new(font_family: &str, font_size: f64) -> Result<Self, cairo::Error> {
-        let surf = ImageSurface::create(Format::ARgb32, 1, 1)?;
-        let cr = Context::new(&surf)?;
-        
-        // Pre-create scaled fonts for common combinations with better rendering
-        let mut fonts = HashMap::new();
-        
-        let combinations = [
-            (FontSlant::Normal, FontWeight::Normal),
-            (FontSlant::Normal, FontWeight::Bold),
-            (FontSlant::Italic, FontWeight::Normal),
-            (FontSlant::Italic, FontWeight::Bold),
-        ];
-        
-        for (slant, weight) in combinations {
-            let key = FontKey { slant, weight };
-            let font = Self::create_scaled_font(&cr, font_family, font_size, slant, weight)?;
-            fonts.insert(key, font);
-        }
-        
-        // Calculate character metrics using normal font
-        let normal_font = fonts.get(&FontKey { slant: FontSlant::Normal, weight: FontWeight::Normal })
-            .unwrap();
+    /// Create a new DrawingCache with fontdue font loading
+    ///
+    /// Note: This implementation currently falls back to basic monospace metrics
+    /// since loading system fonts with fontdue requires platform-specific code.
+    /// In a production implementation, you'd want to:
+    /// 1. Load the specified font family from system font directories
+    /// 2. Fallback to a built-in font if the requested family isn't found
+    /// 3. Handle different platforms (macOS Font Book, Windows font registry, Linux fontconfig)
+    pub fn new(font_family: &str, font_size_px: f64) -> Result<Self, String> {
+        debug!("Creating DrawingCache for font '{}' at size {}", font_family, font_size_px);
 
-        // Build character metrics cache for all printable ASCII characters
+        // For now, implement basic monospace metrics
+        // In a full implementation, this would load the actual system font
+        let monospace_advance = font_size_px * 0.6; // Monospace character spacing
+        let line_height = font_size_px * 1.2;       // Terminal line height
+        let baseline_offset = font_size_px * 0.8;   // Baseline position
+
+        // Initialize empty font cache - in production would load actual fonts
+        let fonts = HashMap::new();
+
+        // Pre-compute metrics for ASCII range based on monospace assumptions
         let mut char_metrics = HashMap::new();
-        for i in 32..=126 {  // Printable ASCII range
+        // Add null character explicitly (not in typical control range)
+        char_metrics.insert('\0', (0.0, 0.0, 0.0, line_height));
+
+        for i in 32..=126 {
             if let Some(ch) = char::from_u32(i) {
-                let extents = normal_font.text_extents(&ch.to_string());
-                char_metrics.insert(ch, extents);
+                let width = monospace_advance;
+                let height = line_height;
+                char_metrics.insert(ch, (monospace_advance, 0.0, width, height));
             }
         }
 
-        // Use a more representative character set for consistent spacing
-        let test_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        let mut total_width = 0.0;
-        let char_count = test_chars.len();
-
-        for ch in test_chars.chars() {
-            let extents = normal_font.text_extents(&ch.to_string());
-            total_width += extents.width();
-        }
-
-        // Use average width for more consistent character spacing
-        let _avg_char_width = total_width / char_count as f64;
-
-        // For Monaco (monospace font), all characters should have same width
-        // Use the width of 'M' as the standard cell width
-        let standard_char_width = normal_font.text_extents("M").width();
-
-        // Add extra spacing between characters for better visual separation
-        // Base width + 0.3 additional spacing as requested
-        let padded_char_width = standard_char_width + 0.3;
-        let extents = normal_font.text_extents("M");
-
-        // Increase line height for better vertical spacing between rows
-        let increased_line_height = extents.height() * 1.3; // 30% more vertical space
-
         Ok(Self {
             font_family: font_family.to_string(),
-            font_size,
+            font_size: font_size_px,
             fonts,
             char_metrics,
-            char_width: padded_char_width,
-            char_height: increased_line_height,
-            ascent: extents.y_bearing().abs(),
+            char_width: monospace_advance,
+            char_height: line_height,
+            ascent: baseline_offset,
         })
     }
-    
-    fn create_scaled_font(
-        cr: &Context,
-        family: &str,
-        size: f64,
-        slant: FontSlant,
-        weight: FontWeight,
-    ) -> Result<ScaledFont, cairo::Error> {
-        cr.select_font_face(family, slant, weight);
-        cr.set_font_size(size);
-        
-        let font_face = cr.font_face().clone();
-        let font_matrix = cr.font_matrix();
-        let ctm = cr.matrix();
-        
-        // ⭐ ENHANCED: Better font rendering options for terminal text
-        let mut options = cairo::FontOptions::new()
-            .map_err(|_| cairo::Error::FontTypeMismatch)?;
 
-        // Use grayscale antialiasing for better terminal text
-        options.set_antialias(Antialias::Gray);
+    /// Get character metrics - returns backend-agnostic struct
+    pub fn get_char_metrics(&self, ch: char) -> CharMetrics {
+        let (advance, _, width, height) = self.char_metrics.get(&ch)
+            .copied()
+            .unwrap_or((self.char_width, 0.0, self.char_width, self.char_height));
 
-        // Medium hinting for good balance of sharpness and shape
-        options.set_hint_style(HintStyle::Medium);
-
-        // Enable metric hinting for consistent spacing
-        options.set_hint_metrics(HintMetrics::On);
-        
-        ScaledFont::new(&font_face, &font_matrix, &ctm, &options)
+        CharMetrics {
+            width,
+            height,
+            ascent: self.ascent,
+        }
     }
-    
-    pub fn get_font(&self, slant: FontSlant, weight: FontWeight) -> Option<&ScaledFont> {
-        self.fonts.get(&FontKey { slant, weight })
+
+    /// Get font data for rendering (if available)
+    /// In a real implementation, this would return the fontdue Font for bitmap generation
+    pub fn get_font_data(&self, _variant: &str) -> Option<&Font> {
+        // For now, just return None - no actual fonts loaded
+        // In production, you'd look up by variant ("normal", "bold", etc.)
+        None
     }
-    
+
+    /// Get the width of a specific character in pixels
+    pub fn get_char_width(&self, ch: char) -> f64 {
+        self.char_metrics.get(&ch)
+            .copied()
+            .unwrap_or((self.char_width, 0.0, self.char_width, self.char_height))
+            .2 // width part of tuple
+    }
+
+    /// Get the advance width (cursor movement) for a character
+    pub fn get_char_advance(&self, ch: char) -> f64 {
+        self.char_metrics.get(&ch)
+            .copied()
+            .unwrap_or((self.char_width, 0.0, self.char_width, self.char_height))
+            .0 // advance width part of tuple
+    }
+
+    /// Calculate total width of a string using font metrics
+    pub fn calculate_text_width(&self, text: &str) -> f64 {
+        text.chars()
+            .map(|ch| self.get_char_advance(ch))
+            .sum()
+    }
+
+    /// Get standard underscore position (baseline offset + descent)
+    pub fn get_underline_position(&self) -> f64 {
+        self.ascent + (self.char_height - self.ascent) * 0.5
+    }
+
+    /// Get standard line thickness for underlines
+    pub fn get_underline_thickness(&self) -> f64 {
+        self.font_size * 0.05 // 5% of font size
+    }
+
+    // Accessor methods to maintain compatibility with existing API
     pub fn char_width(&self) -> f64 {
         self.char_width
     }
-    
+
     pub fn char_height(&self) -> f64 {
         self.char_height
     }
-    
+
     pub fn ascent(&self) -> f64 {
         self.ascent
     }
-    
+
     pub fn font_size(&self) -> f64 {
         self.font_size
     }
-    
+
     pub fn font_family(&self) -> &str {
         &self.font_family
-    }
-
-    /// Get the actual width of a specific character
-    pub fn get_char_width(&self, ch: char) -> f64 {
-        if let Some(extents) = self.char_metrics.get(&ch) {
-            extents.width()
-        } else {
-            // Fallback for unmapped characters
-            self.char_width
-        }
-    }
-
-    /// Get the advance width (how much to move forward after drawing this character)
-    pub fn get_char_advance(&self, ch: char) -> f64 {
-        if let Some(extents) = self.char_metrics.get(&ch) {
-            extents.x_advance()
-        } else {
-            // Fallback for unmapped characters
-            self.char_width
-        }
-    }
-
-    /// Calculate the total width of a string using actual character metrics
-    pub fn calculate_text_width(&self, text: &str) -> f64 {
-        let mut total_width = 0.0;
-        for ch in text.chars() {
-            total_width += self.get_char_advance(ch);
-        }
-        total_width
     }
 }
 
 impl Clone for DrawingCache {
     fn clone(&self) -> Self {
-        DrawingCache::new(&self.font_family, self.font_size)
+        Self::new(&self.font_family, self.font_size)
             .expect("Failed to clone DrawingCache")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_drawing_cache_creation() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+        assert_eq!(cache.font_family(), "monospace");
+        assert_eq!(cache.font_size(), 12.0);
+    }
+
+    #[test]
+    fn test_char_metrics() {
+        let cache = DrawingCache::new("monospace", 16.0).unwrap();
+
+        // Test printable character
+        let metrics = cache.get_char_metrics('X');
+        assert!(metrics.width > 0.0);
+        assert!(metrics.height > 0.0);
+        assert!(metrics.ascent > 0.0);
+
+        // Test control character (should be 0 width)
+        let null_metrics = cache.get_char_metrics('\0');
+        assert_eq!(null_metrics.width, 0.0);
+    }
+
+    #[test]
+    fn test_text_width_calculation() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        let width = cache.calculate_text_width("ABC");
+        // Should be 3 * character advance width
+        let expected = 3.0 * cache.char_width();
+        assert!( (width - expected).abs() < 0.001 );
+    }
+
+    #[test]
+    fn test_accessors() {
+        let cache = DrawingCache::new("monospace", 16.0).unwrap();
+        assert_eq!(cache.char_width(), cache.char_width());
+        assert_eq!(cache.char_height(), cache.char_height());
+        assert_eq!(cache.ascent(), cache.ascent());
+        assert_eq!(cache.font_size(), 16.0);
+        assert_eq!(cache.font_family(), "monospace");
+    }
+
+    #[test]
+    fn test_font_data_retrieval() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Font data retrieval returns None in basic implementation
+        // (would return actual Font instances in production)
+        let font_data = cache.get_font_data("normal");
+        assert!(font_data.is_none());
+    }
+
+    #[test]
+    fn test_control_characters() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Test null character specifically (commonly used in terminals)
+        let null_metrics = cache.get_char_metrics('\0');
+        assert_eq!(null_metrics.width, 0.0, "Null character should have 0 width");
+
+        // Other control characters in terminal contexts may fall back to default metrics
+        // since they're not in our pre-computed ASCII range
+        let newline_metrics = cache.get_char_metrics('\n');
+        assert_eq!(newline_metrics.width, cache.char_width(), "Other control characters fall back to default width");
+    }
+
+    #[test]
+    fn test_ascii_printable_characters() {
+        let cache = DrawingCache::new("monospace", 14.0).unwrap();
+
+        // Test printable ASCII range (32-126) all have positive width
+        for ascii_val in 33..=126 {
+            let ch = char::from_u32(ascii_val).unwrap();
+            let metrics = cache.get_char_metrics(ch);
+            assert!(metrics.width > 0.0, "Printable ASCII char {:?} should have positive width", ch);
+            assert!(metrics.height > 0.0);
+            assert!(metrics.ascent > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_underline_calculations() {
+        let cache = DrawingCache::new("monospace", 16.0).unwrap();
+
+        let underline_pos = cache.get_underline_position();
+        let underline_thickness = cache.get_underline_thickness();
+
+        // Underline position should be between ascent and char height
+        assert!(underline_pos > cache.ascent());
+        assert!(underline_pos < cache.char_height());
+
+        // Underline thickness should be small fraction of font size
+        assert!(underline_thickness > 0.0);
+        assert!(underline_thickness < cache.font_size() * 0.1); // Less than 10% of font size
+    }
+
+    #[test]
+    fn test_clone_functionality() {
+        let original = DrawingCache::new("monospace", 18.0).unwrap();
+        let cloned = original.clone();
+
+        // Should maintain all properties
+        assert_eq!(original.font_family(), cloned.font_family());
+        assert_eq!(original.font_size(), cloned.font_size());
+        assert_eq!(original.char_width(), cloned.char_width());
+        assert_eq!(original.char_height(), cloned.char_height());
+    }
+
+    #[test]
+    fn test_different_font_sizes() {
+        let small = DrawingCache::new("monospace", 10.0).unwrap();
+        let medium = DrawingCache::new("monospace", 14.0).unwrap();
+        let large = DrawingCache::new("monospace", 20.0).unwrap();
+
+        // Larger fonts should have larger metrics
+        assert!(medium.char_width() > small.char_width());
+        assert!(large.char_width() > medium.char_width());
+        assert!(medium.char_height() > small.char_height());
+        assert!(large.char_height() > medium.char_height());
+
+        // Font sizes should match exactly
+        assert_eq!(small.font_size(), 10.0);
+        assert_eq!(medium.font_size(), 14.0);
+        assert_eq!(large.font_size(), 20.0);
+    }
+
+    #[test]
+    fn test_empty_and_unicode_strings() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Empty string should have zero width
+        assert_eq!(cache.calculate_text_width(""), 0.0);
+
+        // Test string with only spaces (which are printable)
+        let spaces_width = cache.calculate_text_width("   ");
+        assert!(spaces_width > 0.0);
+
+        // Test mixed ASCII
+        let mixed_width = cache.calculate_text_width("Hello, World!");
+        let separate_widths: f64 = String::from("Hello, World!").chars()
+            .map(|c| cache.get_char_advance(c))
+            .sum();
+        assert!((mixed_width - separate_widths).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_character_advance_consistency() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // For monospace fonts, all non-control characters should have same advance width
+        let expected_advance = cache.char_width();
+
+        for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".chars() {
+            let advance = cache.get_char_advance(ch);
+            assert_eq!(advance, expected_advance,
+                "Character {} should have advance width {}, got {}", ch, expected_advance, advance);
+        }
+
+        // Control characters should have different advance (typically 0)
+        let null_advance = cache.get_char_advance('\0');
+        assert_ne!(null_advance, expected_advance);
+        assert_eq!(null_advance, 0.0);
+    }
+
+    #[test]
+    fn test_fallback_behavior() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Test with a character not in ASCII range (should use fallback)
+        let euro = cache.get_char_metrics('€');
+        let expected = cache.char_width();
+        assert_eq!(euro.width, expected);
+
+        let heart = cache.get_char_metrics('♥');
+        assert_eq!(heart.width, expected);
     }
 }

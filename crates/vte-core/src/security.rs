@@ -25,9 +25,9 @@
 /// let safe = sanitize_paste("echo 'hello'; rm -rf /", true);
 /// assert_eq!(safe, "\x1b[200~echo 'hello'; rm -rf /\x1b[201~");
 ///
-/// // Without bracketed paste (legacy)
+/// // Without bracketed paste (legacy) - only dangerous chars removed
 /// let safe = sanitize_paste("echo 'hello'\x1b[31mred", false);
-/// assert_eq!(safe, "echo 'hello'"); // Escape sequences removed
+/// assert_eq!(safe, "echo 'hello'red"); // Escapes removed, safe text kept
 /// ```
 pub fn sanitize_paste(text: &str, bracketed: bool) -> String {
     if bracketed {
