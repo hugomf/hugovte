@@ -127,8 +127,8 @@ impl VteTerminalCore {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|e| TerminalError::PtyCreationFailed {
-                message: format!("Failed to create PTY: {}", e),
+            .map_err(|_e| TerminalError::PtyCreationFailed {
+                message: format!("Failed to create PTY"),
             })?;
 
         let mut cmd = CommandBuilder::new("bash");
@@ -175,7 +175,7 @@ impl VteTerminalCore {
 
     /// Start PTY reader thread to process incoming data
     fn start_pty_reader(&self, mut reader: Box<dyn Read + Send>, grid: Arc<RwLock<Grid>>) {
-        let writer_pty = Arc::clone(&self.writer);
+        let _writer_pty = Arc::clone(&self.writer);
         let tx = self.redraw_sender.as_ref().cloned();
 
         thread::spawn(move || {
@@ -244,7 +244,7 @@ impl VteTerminalCore {
     /// Send welcome message on terminal startup
     fn send_welcome_message(&self) {
         let writer_clone = Arc::clone(&self.writer);
-        let grid_clone = Arc::clone(&self.grid);
+        let _grid_clone = Arc::clone(&self.grid);
         let tx = self.redraw_sender.as_ref().cloned();
 
         thread::spawn(move || {
@@ -587,7 +587,7 @@ mod tests {
         use crate::error::TerminalError;
 
         // Test PTY creation error handling
-        let result: Result<VteTerminalCore, TerminalError> = VteTerminalCore::with_config(crate::TerminalConfig::default());
+        let _result: Result<VteTerminalCore, TerminalError> = VteTerminalCore::with_config(crate::TerminalConfig::default());
         // Should succeed in real environment, but if PTY fails, it will return an error
         // We can't test actual PTY failures easily, but we can test the error types exist
 

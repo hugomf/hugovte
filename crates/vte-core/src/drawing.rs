@@ -89,8 +89,8 @@ impl DrawingCache {
     }
 
     /// Get character metrics - returns backend-agnostic struct
-    pub fn get_char_metrics(&self, ch: char) -> CharMetrics {
-        let (advance, _, width, height) = self.char_metrics.get(&ch)
+    pub fn get_char_metrics(&self, _ch: char) -> CharMetrics {
+        let (_advance, _, width, height) = self.char_metrics.get(&_ch)
             .copied()
             .unwrap_or((self.char_width, 0.0, self.char_width, self.char_height));
 
@@ -102,7 +102,7 @@ impl DrawingCache {
     }
 
     /// Get font data for rendering (if available) - placeholder for future fontdue bitmap generation
-    pub fn rasterize_glyph(&self, ch: char, _variant: &str) -> Option<(Vec<u8>, u32, u32)> {
+    pub fn rasterize_glyph(&self, _ch: char, _variant: &str) -> Option<(Vec<u8>, u32, u32)> {
         // TODO: Implement actual fontdue glyph rasterization
         // This would:
         // 1. Look up the appropriate Font for the variant (normal/bold/italic)
