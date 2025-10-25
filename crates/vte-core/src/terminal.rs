@@ -7,7 +7,7 @@
 use crate::grid::Grid;
 use crate::ansi::AnsiParser;
 use crate::config::TerminalConfig;
-use crate::error::TerminalError;
+use crate::error::{TerminalError, TerminalResult};
 
 use tracing::{error, warn, info, debug, trace};
 
@@ -32,7 +32,7 @@ pub struct VteTerminalCore {
 impl VteTerminalCore {
     /// Create new terminal core with default configuration
     pub fn new() -> Self {
-        Self::with_config(TerminalConfig::default())
+        Self::with_config(TerminalConfig::default()).expect("Failed to create terminal with default config")
     }
 }
 
@@ -44,7 +44,7 @@ impl Default for VteTerminalCore {
 
 impl VteTerminalCore {
     /// Create new terminal core with specified configuration
-    pub fn with_config(config: TerminalConfig) -> Self {
+    pub fn with_config(config: TerminalConfig) -> TerminalResult<Self> {
         debug!("Creating VteTerminalCore with config: font={}, size={}",
                config.font_family, config.font_size);
 
@@ -57,16 +57,43 @@ impl VteTerminalCore {
         grid.bg = config.default_bg;
         let grid = Arc::new(RwLock::new(grid));
 
-        // Create parser with error callback
-        let parser = AnsiParser::new().with_error_callback(|err| {
-            warn!("ANSI parser error: {}", err);
+        // Create parser with error callback that converts AnsiError to TerminalError
+        let parser = AnsiParser::new().with_error_callback(|ansi_err| {
+            // Convert AnsiError to TerminalError
+            let terminal_err = match ansi_err {
+                crate::ansi::AnsiError::TooManyParams { sequence, count } =>
+                    TerminalError::ParserError {
+                        message: format!("Too many parameters ({}) in sequence: {}", count, sequence)
+                    },
+                crate::ansi::AnsiError::OscTooLong { length } =>
+                    TerminalError::ParserError {
+                        message: format!("OSC sequence too long: {} bytes", length)
+                    },
+                crate::ansi::AnsiError::ParamTooLarge { value } =>
+                    TerminalError::ParserError {
+                        message: format!("Parameter value {} exceeded maximum", value)
+                    },
+                crate::ansi::AnsiError::MalformedSequence { context } =>
+                    TerminalError::InvalidEscapeSequence {
+                        sequence: context.clone()
+                    },
+            };
+            warn!("ANSI parser error: {}", terminal_err);
         });
 
         // Create PTY pair
-        let pty_pair = Self::spawn_pty(init_cols, init_rows);
+        let pty_pair_result = Self::spawn_pty(init_cols, init_rows);
+        let pty_pair = match pty_pair_result {
+            Ok(pair) => pair,
+            Err(e) => return Err(e),
+        };
 
         // Get PTY reader/writer
-        let (reader, writer) = Self::setup_pty_handles(&pty_pair);
+        let handles_result = Self::setup_pty_handles(&pty_pair);
+        let (reader, writer) = match handles_result {
+            Ok((r, w)) => (r, w),
+            Err(e) => return Err(e),
+        };
         let writer = Arc::new(Mutex::new(writer));
 
         // Create redraw channel for backend communication
@@ -85,11 +112,11 @@ impl VteTerminalCore {
         core.send_welcome_message();
 
         info!("Terminal core initialized successfully");
-        core
+        Ok(core)
     }
 
     /// Spawn PTY process with configured shell
-    fn spawn_pty(cols: usize, rows: usize) -> Arc<RwLock<Option<portable_pty::PtyPair>>> {
+    fn spawn_pty(cols: usize, rows: usize) -> TerminalResult<Arc<RwLock<Option<portable_pty::PtyPair>>>> {
         debug!("Spawning PTY with dimensions {}x{}", cols, rows);
 
         let pty_system = native_pty_system();
@@ -100,7 +127,9 @@ impl VteTerminalCore {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .expect("Failed to create PTY");
+            .map_err(|e| TerminalError::PtyCreationFailed {
+                message: format!("Failed to create PTY: {}", e),
+            })?;
 
         let mut cmd = CommandBuilder::new("bash");
         cmd.env("TERM", "xterm-256color");
@@ -108,34 +137,40 @@ impl VteTerminalCore {
         cmd.env("CLICOLOR", "1");
         cmd.env("LSCOLORS", "ExGxFxdxCxDxDxBxBxExEx");
 
-        match pair.slave.spawn_command(cmd) {
-            Ok(_) => info!("PTY child process spawned successfully"),
-            Err(e) => {
-                error!("Failed to spawn PTY child process: {}", e);
-                panic!("Terminal startup failed - cannot spawn shell");
-            }
-        }
+        pair.slave.spawn_command(cmd)
+            .map_err(|e| TerminalError::ProcessSpawnFailed {
+                program: "bash".to_string(),
+            })?;
+
+        info!("PTY child process spawned successfully");
 
         #[allow(clippy::arc_with_non_send_sync)]
-        Arc::new(RwLock::new(Some(pair)))
+        Ok(Arc::new(RwLock::new(Some(pair))))
     }
 
     /// Extract reader and writer handles from PTY pair
-    fn setup_pty_handles(pty_pair: &Arc<RwLock<Option<portable_pty::PtyPair>>>) -> (Box<dyn Read + Send>, Box<dyn Write + Send>) {
-        let pair_guard = pty_pair.read().unwrap();
-        let pair = pair_guard.as_ref().unwrap();
+    fn setup_pty_handles(pty_pair: &Arc<RwLock<Option<portable_pty::PtyPair>>>) -> TerminalResult<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        let pair_guard = pty_pair.read()
+            .map_err(|e| TerminalError::GridLockError {
+                message: format!("PTY pair lock poisoned: {}", e)
+            })?;
 
-        let reader = pair.master.try_clone_reader().unwrap_or_else(|e| {
-            error!("Failed to clone PTY reader: {}", e);
-            panic!("Terminal startup failed - reader unavailable");
-        });
+        let pair = pair_guard.as_ref()
+            .ok_or_else(|| TerminalError::PtyDisconnected {
+                message: "PTY pair not initialized".to_string()
+            })?;
 
-        let writer = pair.master.take_writer().unwrap_or_else(|e| {
-            error!("Failed to take PTY writer: {}", e);
-            panic!("Terminal startup failed - writer unavailable");
-        });
+        let reader = pair.master.try_clone_reader()
+            .map_err(|e| TerminalError::PtyReadError {
+                source: std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to clone PTY reader: {}", e))
+            })?;
 
-        (reader, writer)
+        let writer = pair.master.take_writer()
+            .map_err(|e| TerminalError::PtyReadError {
+                source: std::io::Error::new(std::io::ErrorKind::Other, format!("Failed to take PTY writer: {}", e))
+            })?;
+
+        Ok((reader, writer))
     }
 
     /// Start PTY reader thread to process incoming data
@@ -238,7 +273,7 @@ impl VteTerminalCore {
     /// Send data to terminal process
     pub fn send_input(&self, data: &[u8]) -> Result<(), TerminalError> {
         let mut writer = self.writer.lock()
-            .map_err(|_| TerminalError::GridLockError("Writer lock poisoned".to_string()))?;
+            .map_err(|_| TerminalError::GridLockError { message: "Writer lock poisoned".to_string() })?;
 
         writer.write_all(data).map_err(TerminalError::from)?;
         writer.flush().map_err(TerminalError::from)?;
@@ -388,7 +423,7 @@ mod tests {
     #[test]
     fn test_terminal_core_with_config() {
         let config = TerminalConfig::default();
-        let terminal = VteTerminalCore::with_config(config);
+        let terminal = VteTerminalCore::with_config(config).expect("Failed to create terminal");
 
         // Test that terminal is created without panicking
         let memory_info = terminal.get_memory_usage();
@@ -497,5 +532,26 @@ mod tests {
         // After locks are released, terminal should still work
         let memory_info = terminal.get_memory_usage();
         assert!(memory_info.total_grid_bytes > 0);
+    }
+
+    #[test]
+    fn test_error_handling_and_recovery() {
+        use crate::error::TerminalError;
+
+        // Test PTY creation error handling
+        let result: Result<VteTerminalCore, TerminalError> = VteTerminalCore::with_config(crate::TerminalConfig::default());
+        // Should succeed in real environment, but if PTY fails, it will return an error
+        // We can't test actual PTY failures easily, but we can test the error types exist
+
+        // Test input error handling
+        let terminal = VteTerminalCore::new();
+        let invalid_utf8_data = vec![0x80, 0x81, 0x82]; // Invalid UTF-8
+        let result = terminal.send_input(&invalid_utf8_data);
+        // Should still succeed (handles invalid UTF-8 gracefully)
+
+        assert!(result.is_ok());
+
+        // Test grid lock error recovery path
+        // This is harder to test directly without exposing internal state
     }
 }
