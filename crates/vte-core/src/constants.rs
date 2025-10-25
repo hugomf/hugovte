@@ -20,6 +20,9 @@ pub const MAX_PARAM_VALUE: u16 = 9999;
 pub const CURSOR_BLINK_INTERVAL_MS: u64 = 500;
 pub const CLICK_TIMEOUT_MS: u128 = 200;
 
+// Legacy compatibility constants
+pub const DEFAULT_BOLD_IS_BRIGHT: bool = true; // For backwards compatibility
+
 // Color constants - with transparency support
 pub const DEFAULT_FG: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 pub const DEFAULT_BG: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }; // Fully transparent by default

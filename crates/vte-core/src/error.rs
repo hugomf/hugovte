@@ -88,3 +88,87 @@ pub enum TerminalError {
 }
 
 pub type TerminalResult<T> = Result<T, TerminalError>;
+
+/// Enhanced error recovery strategies for terminal operations
+impl TerminalError {
+    /// Check if this error is recoverable through automatic retry
+    pub fn is_recoverable(&self) -> bool {
+        matches!(self,
+            TerminalError::PtyReadError { .. } |
+            TerminalError::GridLockError { .. } |
+            TerminalError::ChannelSendError { .. } |
+            TerminalError::BufferOperationFailed { .. }
+        )
+    }
+
+    /// Suggest recovery action for this error type
+    pub fn recovery_strategy(&self) -> RecoveryStrategy {
+        match self {
+            TerminalError::PtyDisconnected { .. } |
+            TerminalError::PtyReadError { .. } =>
+                RecoveryStrategy::ReconnectPty,
+
+            TerminalError::GridLockError { .. } =>
+                RecoveryStrategy::RetryWithTimeout,
+
+            TerminalError::ChannelSendError { .. } =>
+                RecoveryStrategy::DropAndReconnect,
+
+            TerminalError::MemoryLimitExceeded { .. } =>
+                RecoveryStrategy::CleanupAndRetry,
+
+            TerminalError::ProcessSpawnFailed { .. } =>
+                RecoveryStrategy::RetryWithDifferentShell,
+
+            TerminalError::FontError { .. } =>
+                RecoveryStrategy::FallbackFont,
+
+            _ => RecoveryStrategy::PropagateError,
+        }
+    }
+
+    /// Maximum number of retry attempts for this error type
+    pub fn max_retry_attempts(&self) -> usize {
+        match self.recovery_strategy() {
+            RecoveryStrategy::ReconnectPty => 3,
+            RecoveryStrategy::RetryWithTimeout => 5,
+            RecoveryStrategy::CleanupAndRetry => 2,
+            RecoveryStrategy::RetryWithDifferentShell => 1,
+            RecoveryStrategy::FallbackFont => 3,
+            RecoveryStrategy::DropAndReconnect => 2,
+            RecoveryStrategy::PropagateError => 0,
+        }
+    }
+
+    /// Timeout between retry attempts
+    pub fn retry_timeout(&self) -> std::time::Duration {
+        match self.recovery_strategy() {
+            RecoveryStrategy::ReconnectPty => std::time::Duration::from_millis(500),
+            RecoveryStrategy::RetryWithTimeout => std::time::Duration::from_millis(100),
+            RecoveryStrategy::CleanupAndRetry => std::time::Duration::from_millis(50),
+            RecoveryStrategy::RetryWithDifferentShell => std::time::Duration::from_secs(2),
+            RecoveryStrategy::FallbackFont => std::time::Duration::from_millis(10),
+            RecoveryStrategy::DropAndReconnect => std::time::Duration::from_millis(200),
+            RecoveryStrategy::PropagateError => std::time::Duration::from_millis(0),
+        }
+    }
+}
+
+/// Recovery strategies for different error types
+#[derive(Debug, Clone, Copy)]
+pub enum RecoveryStrategy {
+    /// Attempt to reconnect PTY
+    ReconnectPty,
+    /// Retry operation after timeout
+    RetryWithTimeout,
+    /// Drop failed connection and establish new one
+    DropAndReconnect,
+    /// Clean up resources and retry
+    CleanupAndRetry,
+    /// Try spawning with different shell
+    RetryWithDifferentShell,
+    /// Switch to fallback font
+    FallbackFont,
+    /// Continue with error (no recovery possible)
+    PropagateError,
+}

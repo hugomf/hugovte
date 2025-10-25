@@ -220,7 +220,7 @@ impl RateLimiter {
     /// Create a new rate limiter with specified minimum interval
     pub fn new(min_interval_ms: u64) -> Self {
         Self {
-            last_operation: std::time::Instant::now(),
+            last_operation: std::time::Instant::now() - std::time::Duration::from_millis(min_interval_ms),
             min_interval: std::time::Duration::from_millis(min_interval_ms),
         }
     }
@@ -327,5 +327,53 @@ mod tests {
         assert!(is_safe_punctuation('?'));
         assert!(!is_safe_punctuation('\x00'));
         assert!(!is_safe_punctuation('\x1B'));
+    }
+
+    #[test]
+    fn test_rate_limit_prevents_dos() {
+        let mut limiter = RateLimiter::new(10); // 10ms minimum interval
+
+        // First operation should always be allowed
+        assert!(limiter.allow_operation(), "First operation should always be allowed");
+
+        // Immediate second operation should be blocked
+        assert!(!limiter.allow_operation(), "Immediate second operation should be blocked");
+
+        // Test that the timing logic works (basic functional test)
+        // We don't rely on exact timing in tests to avoid flaky behavior
+        // The rate limiter should at least allow operations initially and block immediate repeats
+        let mut limiter2 = RateLimiter::new(0); // No limiting
+        assert!(limiter2.allow_operation());
+        assert!(limiter2.allow_operation()); // Should allow with 0ms interval
+    }
+
+    #[test]
+    fn test_security_config_defaults() {
+        let config = SecurityConfig::default();
+
+        // Default should enable bracketed paste for security
+        assert!(config.bracketed_paste_default);
+
+        // Reasonable limits should be set
+        assert!(config.max_osc_length > 0);
+        assert!(config.max_csi_params > 0);
+        assert!(config.resize_rate_limit > 0);
+    }
+
+    #[test]
+    fn test_security_config_instantiation() {
+        // Should not panic on construction
+        let config = SecurityConfig {
+            bracketed_paste_default: false,
+            max_osc_length: 4096,
+            max_csi_params: 16,
+            filter_osc_sequences: true,
+            resize_rate_limit: 5,
+        };
+
+        assert_eq!(config.max_osc_length, 4096);
+        assert_eq!(config.resize_rate_limit, 5);
+        assert!(!config.bracketed_paste_default);
+        assert!(config.filter_osc_sequences);
     }
 }

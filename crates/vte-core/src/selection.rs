@@ -161,6 +161,15 @@ impl Selection {
     pub fn has_selection(&self) -> bool {
         matches!(self.state, SelectionState::Complete { .. })
     }
+
+    /// Directly create a selection (bypassing the press/drag/click logic)
+    /// Useful for programmatic selections like word/line selection
+    pub fn create_selection(&mut self, start_row: usize, start_col: usize, end_row: usize, end_col: usize) {
+        self.state = SelectionState::Complete {
+            start: (start_row, start_col),
+            end: (end_row, end_col),
+        };
+    }
 }
 
 #[cfg(test)]

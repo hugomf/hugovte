@@ -1,7 +1,8 @@
 // src/config.rs
 use crate::ansi::Color;
-use crate::constants::{DEFAULT_FONT_SIZE, DEFAULT_FONT_FAMILY, SCROLLBACK_LIMIT, 
-                      CURSOR_BLINK_INTERVAL_MS, CLICK_TIMEOUT_MS, DEFAULT_FG, DEFAULT_BG};
+use crate::constants::{DEFAULT_FONT_SIZE, DEFAULT_FONT_FAMILY, SCROLLBACK_LIMIT,
+                      CURSOR_BLINK_INTERVAL_MS, CLICK_TIMEOUT_MS, DEFAULT_FG, DEFAULT_BG,
+                      DEFAULT_BOLD_IS_BRIGHT};
 
 #[derive(Clone, Debug)]
 pub struct TerminalConfig {
@@ -16,6 +17,8 @@ pub struct TerminalConfig {
     pub enable_selection: bool,
     pub draw_grid_lines: bool,
     pub grid_line_alpha: f64,
+    /// Legacy compatibility: bold also makes colors bright (ANSI 8-15 instead of 0-7)
+    pub bold_is_bright: bool,
 }
 
 impl Default for TerminalConfig {
@@ -32,6 +35,7 @@ impl Default for TerminalConfig {
             enable_selection: true,
             draw_grid_lines: false,
             grid_line_alpha: 0.8,
+            bold_is_bright: DEFAULT_BOLD_IS_BRIGHT,
         }
     }
 }

@@ -9,10 +9,12 @@
 - Reminders: Read .clinerules at start of each session. Follow YAGNI—code only what's needed NOW. Tests must pass before committing. NEVER push to remote—commit locally only. Stage specific files with `git add <file>`, not `git add .`. Security/crypto code needs review. Public APIs must be documented. Breaking changes require CHANGELOG updates. Memory safe code only—no unsafe blocks without review. Prefer thiserror for custom error types.
 
 # 1. Git safety (NEVER push)
-- Commit locally only.
+
+- Never commit Only humans will, do let humans review the changes
+<!-- - Commit locally only.
 - Conventional message: `feat|fix|refactor|docs|test|chore: desc`.
 - Never run: `git push`, `git merge`, `git rebase`, `git add .`.
-- Stage explicit files: `git add <file>`.
+- Stage explicit files: `git add <file>`. -->
 
 # 2. Time-box
 Max time per task: 45 min. If not done, push branch, open draft PR, and hand-off to human.

@@ -41,6 +41,8 @@ pub trait UIRenderer {
     fn clear(&mut self);
     fn flush(&mut self);
     fn set_cursor_shape(&mut self, shape: CursorShape);
+    /// Handle hyperlink click (OSC 8) - return true if handled
+    fn handle_hyperlink(&mut self, url: &str) -> bool;
 }
 
 /// Input handling trait

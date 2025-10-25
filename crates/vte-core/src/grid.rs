@@ -1,6 +1,7 @@
 // src/grid.rs
 use crate::ansi::{AnsiGrid, Cell, Color};
 use crate::selection::Selection;
+use vte_ansi::color::brighten_color;
 use std::time::Instant;
 
 /// Terminal grid - manages cell storage and cursor state
@@ -10,6 +11,7 @@ pub struct Grid {
     pub cells: Vec<Cell>, // Flat storage for better cache locality
     pub alternate_cells: Vec<Cell>, // Alternate screen buffer
     pub scrollback: Vec<Cell>, // Also flat storage (primary buffer only)
+    pub config: std::sync::Arc<crate::config::TerminalConfig>,
     pub scroll_offset: usize,
     pub col: usize,
     pub row: usize,
@@ -64,7 +66,7 @@ impl Grid {
         }
     }
 
-    pub fn new(cols: usize, rows: usize) -> Self {
+    pub fn new(cols: usize, rows: usize, config: std::sync::Arc<crate::config::TerminalConfig>) -> Self {
         let total_cells = cols * rows;
         let cells = vec![Self::default_cell(); total_cells];
         let alternate_cells = vec![Self::default_cell(); total_cells];
@@ -74,6 +76,7 @@ impl Grid {
             cells,
             alternate_cells,
             scrollback: Vec::new(),
+            config,
             scroll_offset: 0,
             col: 0,
             row: 0,
@@ -331,11 +334,11 @@ impl Grid {
             // Find the actual content in this row (cells with non-null characters)
             let mut line_cells = Vec::new();
             for cell in row_slice {
-                if cell.ch != '\0' {
-                    line_cells.push(*cell);
-                } else {
-                    break; // Stop at first null (line terminator)
-                }
+            if cell.ch != '\0' {
+                line_cells.push(cell.clone());
+            } else {
+                break; // Stop at first null (line terminator)
+            }
             }
 
             // Only include non-empty lines
@@ -397,16 +400,92 @@ impl Grid {
         self.cursor_visible
     }
 
-    /// Select word at the given position
-    pub fn select_word(&mut self, _row: usize, _col: usize) {
-        // TODO: Implement word selection based on Unicode word boundaries
-        // For now, just do nothing safely
+    /// Select word at the given position using Unicode word boundaries
+    pub fn select_word(&mut self, row: usize, col: usize) {
+        // Get the text content of the row
+        let row_text = self.get_row_text(row);
+        if row_text.is_empty() {
+            return;
+        }
+
+        // Find word boundaries around the cursor position
+        // For simplicity, treat alphanumeric sequences as words, separated by spaces/punctuation
+        let chars: Vec<char> = row_text.chars().collect();
+        if col >= chars.len() {
+            return;
+        }
+
+        // Find word start (work backwards from cursor)
+        let mut word_start = col;
+        while word_start > 0 && chars[word_start - 1].is_alphanumeric() {
+            word_start -= 1;
+        }
+
+        // Find word end (work forwards from cursor)
+        let mut word_end = col;
+        while word_end < chars.len() - 1 && chars[word_end + 1].is_alphanumeric() {
+            word_end += 1;
+        }
+
+        // If single char, ensure it's at least a valid position
+        if word_start == word_end && !chars[word_start].is_alphanumeric() {
+            return; // Not a valid word position
+        }
+
+        // Create selection directly
+        self.selection.create_selection(row, word_start, row, word_end);
     }
 
-    /// Select line at the given position
-    pub fn select_line(&mut self, _row: usize) {
-        // TODO: Implement line selection
-        // For now, just do nothing safely
+    /// Get normalized selection bounds
+    pub fn get_normalized_bounds(&self) -> Option<((usize, usize), (usize, usize))> {
+        self.selection.get_normalized_bounds()
+    }
+
+    /// Select entire line at the given row
+    pub fn select_line(&mut self, row: usize) {
+        // Select the entire row from first non-null column to last non-null column
+
+        // Find first non-null cell
+        let mut start_col = 0;
+        for col in 0..self.cols {
+            if self.get_cell(row, col).ch != '\0' {
+                start_col = col;
+                break;
+            }
+        }
+
+        // Find last non-null cell (working backwards)
+        let mut end_col = 0;
+        for col in (0..self.cols).rev() {
+            if self.get_cell(row, col).ch != '\0' {
+                end_col = col;
+                break;
+            }
+        }
+
+        // If line is completely empty, select nothing
+        if start_col == 0 && self.get_cell(row, 0).ch == '\0' {
+            return;
+        }
+
+        // Create selection directly
+        self.selection.create_selection(row, start_col, row, end_col);
+    }
+
+    /// Get text content of a specific row as a string
+    fn get_row_text(&self, row: usize) -> String {
+        let mut text = String::new();
+
+        for col in 0..self.cols {
+            let cell = self.get_cell(row, col);
+            if cell.ch != '\0' {
+                text.push(cell.ch);
+            } else {
+                break; // Stop at first null (line terminator)
+            }
+        }
+
+        text
     }
 
     pub fn is_pressed(&self) -> bool {
@@ -738,6 +817,10 @@ impl AnsiGrid for Grid {
     }
 
     fn set_bold(&mut self, bold: bool) {
+        if self.config.bold_is_bright && bold && !self.bold {
+            // When enabling bold and bold_is_bright is enabled, brighten basic ANSI colors
+            self.fg = brighten_color(self.fg);
+        }
         self.bold = bold;
     }
     
@@ -1032,13 +1115,21 @@ impl AnsiGrid for Grid {
 
 #[cfg(test)]
 mod tests {
+    fn config() -> std::sync::Arc<crate::config::TerminalConfig> {
+        std::sync::Arc::new(crate::config::TerminalConfig::default())
+    }
+
+    fn grid_new(rows: usize, cols: usize) -> Grid {
+        Grid::new(cols, rows, config())
+    }
     use super::*;
     use crate::ansi::Cell;
     use crate::constants::{DEFAULT_FG, DEFAULT_BG};
 
     #[test]
     fn test_grid_creation() {
-        let grid = Grid::new(80, 24);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let grid = Grid::new(80, 24, config);
         assert_eq!(grid.cols, 80);
         assert_eq!(grid.rows, 24);
         assert_eq!(grid.cells.len(), 80 * 24);
@@ -1051,11 +1142,12 @@ mod tests {
 
     #[test]
     fn test_grid_resize() {
-        let mut grid = Grid::new(80, 24);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(80, 24, config);
 
         // Fill first few cells with test data
-        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
-        *grid.get_cell_mut(0, 1) = Cell { ch: 'B', ..Default::default() };
+            *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+            *grid.get_cell_mut(0, 1) = Cell { ch: 'B', ..Default::default() };
 
         // Resize larger
         grid.resize(100, 30);
@@ -1070,7 +1162,8 @@ mod tests {
 
     #[test]
     fn test_cursor_movement() {
-        let mut grid = Grid::new(10, 10);
+        let config = config();
+        let mut grid = Grid::new(10, 10, config);
 
         // Test absolute movement
         grid.move_abs(5, 7);
@@ -1094,7 +1187,8 @@ mod tests {
 
     #[test]
     fn test_cell_writing_and_reading() {
-        let mut grid = Grid::new(10, 10);
+        let config = config();
+        let mut grid = Grid::new(10, 10, config);
 
         // Write a character
         let test_cell = Cell {
@@ -1120,7 +1214,7 @@ mod tests {
 
     #[test]
     fn test_clear_operations() {
-        let mut grid = Grid::new(5, 5);
+        let mut grid = grid_new(5, 5);
 
         // Put some content
         *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
@@ -1142,7 +1236,8 @@ mod tests {
 
     #[test]
     fn test_scroll_operations() {
-        let mut grid = Grid::new(5, 3);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(5, 3, config);
 
         // Put content in rows 0, 1, 2
         *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
@@ -1168,7 +1263,8 @@ mod tests {
 
     #[test]
     fn test_scroll_down() {
-        let mut grid = Grid::new(5, 3);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(5, 3, config);
 
         // Put content in all rows
         *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
@@ -1188,7 +1284,8 @@ mod tests {
 
     #[test]
     fn test_line_operations() {
-        let mut grid = Grid::new(5, 5);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(5, 5, config);
 
         // Put content in a line
         grid.row = 2;
@@ -1215,7 +1312,8 @@ mod tests {
 
     #[test]
     fn test_character_operations() {
-        let mut grid = Grid::new(5, 5);
+        let config = config();
+        let mut grid = Grid::new(5, 5, config);
         grid.row = 1;
 
         // Put characters: [A, B, C]
@@ -1250,7 +1348,8 @@ mod tests {
 
     #[test]
     fn test_alternate_screen() {
-        let mut grid = Grid::new(3, 3);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(3, 3, config);
 
         // Put content on primary screen
         *grid.get_cell_mut(0, 0) = Cell { ch: 'P', ..Default::default() };
@@ -1278,7 +1377,8 @@ mod tests {
 
     #[test]
     fn test_cursor_save_restore() {
-        let mut grid = Grid::new(10, 10);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(10, 10, config);
 
         // Move cursor
         grid.move_abs(5, 7);
@@ -1301,7 +1401,8 @@ mod tests {
 
     #[test]
     fn test_attribute_management() {
-        let mut grid = Grid::new(5, 5);
+        let config = std::sync::Arc::new(crate::config::TerminalConfig::default());
+        let mut grid = Grid::new(5, 5, config);
 
         // Test setting attributes
         grid.set_bold(true);
@@ -1319,7 +1420,8 @@ mod tests {
 
     #[test]
     fn test_newline_with_scrollback() {
-        let mut grid = Grid::new(3, 2); // Small grid to trigger scrolling easily
+        let config = config();
+        let mut grid = Grid::new(3, 2, config); // Small grid to trigger scrolling easily
 
         // Fill the screen
         grid.put('A'); grid.advance();
@@ -1342,7 +1444,8 @@ mod tests {
 
     #[test]
     fn test_selection_integration() {
-        let mut grid = Grid::new(5, 5);
+        let config = config();
+        let mut grid = Grid::new(5, 5, config);
 
         // Start selection
         grid.start_selection(1, 2);
@@ -1362,7 +1465,8 @@ mod tests {
 
     #[test]
     fn test_resize_with_bounds_clamping() {
-        let mut grid = Grid::new(10, 10);
+        let config = config();
+        let mut grid = Grid::new(10, 10, config);
 
         // Put cursor near the edge
         grid.move_abs(8, 8);
@@ -1379,7 +1483,8 @@ mod tests {
 
     #[test]
     fn test_cursor_blink() {
-        let mut grid = Grid::new(5, 5);
+        let config = config();
+        let mut grid = Grid::new(5, 5, config);
 
         // Initially visible
         assert!(grid.is_cursor_visible());
@@ -1395,7 +1500,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_basic() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Fill with content: "AAAAA\nBBBBB\nCCCCC"
         for col in 0..5 {
@@ -1420,7 +1525,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_merge_lines() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Create wrapped lines (simulate hard wrapping)
         // Row 0: "AAAAA" (full width)
@@ -1449,7 +1554,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_cursor_positioning() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Put content and position cursor in middle of logical line
         for col in 0..4 {
@@ -1475,7 +1580,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_cursor_bounds() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Position cursor near edge
         grid.move_abs(2, 4); // Bottom right
@@ -1490,7 +1595,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_alternate_screen() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Put content on primary
         *grid.get_cell_mut(0, 0) = Cell { ch: 'P', ..Default::default() };
@@ -1518,7 +1623,7 @@ mod tests {
 
     #[test]
     fn test_extract_logical_lines() {
-        let mut grid = Grid::new(4, 3);
+        let mut grid = Grid::new(4, 3, config());
 
         // Create test buffer: row 0 fully filled, row 1 partially filled, row 2 empty
         for col in 0..4 {
@@ -1543,7 +1648,7 @@ mod tests {
 
     #[test]
     fn test_wrap_line() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Create logical line longer than new width
         let logical_line: Vec<Cell> = "ABCDEFGHIJ".chars()
@@ -1568,7 +1673,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_no_change() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Put some content
         *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
@@ -1584,7 +1689,7 @@ mod tests {
 
     #[test]
     fn test_resize_with_rewrap_empty_grid() {
-        let mut grid = Grid::new(5, 3);
+        let mut grid = Grid::new(5, 3, config());
 
         // Empty grid
         grid.resize_with_rewrap(4, 2);
@@ -1599,5 +1704,164 @@ mod tests {
                 assert_eq!(grid.get_cell(row, col).ch, '\0');
             }
         }
+    }
+
+    #[test]
+    fn test_word_selection_in_text() {
+        let mut grid = Grid::new(20, 5, config());
+
+        // Put text content in a row: "Hello World! This is a test."
+        let text = "Hello World! This is a test.";
+        for (col, ch) in text.chars().enumerate() {
+            if col < grid.cols {
+                *grid.get_cell_mut(1, col) = Cell { ch, ..Default::default() };
+            }
+        }
+
+        // Select word "World" (position at 'd' in "World")
+        // "Hello World! This is a test."
+        //         ^ cursor here at col 11 ('d')
+        grid.select_word(1, 11);
+
+        // Should select "World" - from 'W' (col 6) to 'd' (col 11)
+        let bounds = grid.get_normalized_bounds().unwrap();
+        assert_eq!(bounds, ((1, 6), (1, 11))); // Row 1, cols 6-11: "World"
+    }
+
+    #[test]
+    fn test_word_selection_at_boundaries() {
+        let mut grid = Grid::new(20, 5, config());
+
+        // Put text: "word1 word2  word3"
+        let text = "word1 word2  word3";
+        for (col, ch) in text.chars().enumerate() {
+            if col < grid.cols {
+                *grid.get_cell_mut(0, col) = Cell { ch, ..Default::default() };
+            }
+        }
+
+        // Select start of word (cursor at 'w' in "word2")
+        grid.select_word(0, 6); // 'w' in "word2"
+
+        // Should select "word2" (cols 6-10)
+        let bounds = grid.get_normalized_bounds().unwrap();
+        assert_eq!(bounds, ((0, 6), (0, 10))); // "word2"
+    }
+
+    #[test]
+    fn test_line_selection() {
+        let mut grid = Grid::new(10, 5, config());
+
+        // Put partial content in row 2: "Hello"
+        let text = "Hello";
+        for (col, ch) in text.chars().enumerate() {
+            *grid.get_cell_mut(2, col) = Cell { ch, ..Default::default() };
+        }
+
+        // Select entire line 2
+        grid.select_line(2);
+
+        // Should select from first to last non-null character (cols 0-4)
+        let bounds = grid.get_normalized_bounds().unwrap();
+        assert_eq!(bounds, ((2, 0), (2, 4))); // "Hello"
+    }
+
+    #[test]
+    fn test_word_selection_single_character() {
+        let mut grid = Grid::new(10, 5, config());
+
+        // Put mixed text: "a b c"
+        let text = "a b c";
+        for (col, ch) in text.chars().enumerate() {
+            if col < grid.cols {
+                *grid.get_cell_mut(0, col) = Cell { ch, ..Default::default() };
+            }
+        }
+
+        // Select single character word "a" (cursor at 'a')
+        grid.select_word(0, 0);
+
+        let bounds = grid.get_normalized_bounds().unwrap();
+        assert_eq!(bounds, ((0, 0), (0, 0))); // Single char "a"
+    }
+
+    #[test]
+    fn test_punctuation_word_boundaries() {
+        let mut grid = Grid::new(20, 5, config());
+
+        // Put text: "hello,world!test()"
+        let text = "hello,world!test()";
+        for (col, ch) in text.chars().enumerate() {
+            if col < grid.cols {
+                *grid.get_cell_mut(0, col) = Cell { ch, ..Default::default() };
+            }
+        }
+
+        // Select word at punctuation boundary (cursor at 'w' in "world")
+        grid.select_word(0, 6);
+
+        // Should select "world" only (cols 6-10), stopping at '!'
+        let bounds = grid.get_normalized_bounds().unwrap();
+        assert_eq!(bounds, ((0, 6), (0, 10))); // "world"
+    }
+
+    #[test]
+    fn test_bold_is_bright_functionality() {
+        use crate::ansi::COLOR_PALETTE;
+        let config = crate::config::TerminalConfig {
+            bold_is_bright: true,
+            ..Default::default()
+        };
+        let mut grid = Grid::new(80, 24, std::sync::Arc::new(config));
+
+        // Set foreground to basic red (color index 1)
+        grid.fg = COLOR_PALETTE[1]; // Basic red
+        assert_eq!(grid.fg, COLOR_PALETTE[1]);
+
+        // Enable bold - should automatically make it bright red (color index 9)
+        grid.set_bold(true);
+        assert_eq!(grid.fg, COLOR_PALETTE[9]); // Bright red
+        assert!(grid.bold);
+
+        // Disable bold - should keep the bright color (legacy behavior)
+        grid.set_bold(false);
+        assert!(!grid.bold);
+        assert_eq!(grid.fg, COLOR_PALETTE[9]); // Still bright red
+    }
+
+    #[test]
+    fn test_bold_is_bright_disabled() {
+        use crate::ansi::COLOR_PALETTE;
+        let config = crate::config::TerminalConfig {
+            bold_is_bright: false, // Explicitly disabled
+            ..Default::default()
+        };
+        let mut grid = Grid::new(80, 24, std::sync::Arc::new(config));
+
+        // Set foreground to basic red (color index 1)
+        grid.fg = COLOR_PALETTE[1]; // Basic red
+
+        // Enable bold - should NOT change color when disabled
+        grid.set_bold(true);
+        assert_eq!(grid.fg, COLOR_PALETTE[1]); // Still basic red
+        assert!(grid.bold);
+    }
+
+    #[test]
+    fn test_bold_is_bright_custom_color() {
+        // Test that non-palette colors are unchanged
+        let custom_color = crate::ansi::Color::rgb(0.5, 0.6, 0.7);
+        let config = crate::config::TerminalConfig {
+            bold_is_bright: true,
+            ..Default::default()
+        };
+        let mut grid = Grid::new(80, 24, std::sync::Arc::new(config));
+
+        grid.fg = custom_color;
+
+        // Enable bold - custom colors should be unchanged
+        grid.set_bold(true);
+        assert_eq!(grid.fg, custom_color);
+        assert!(grid.bold);
     }
 }

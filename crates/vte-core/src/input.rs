@@ -306,7 +306,7 @@ mod tests {
             return;
         }
 
-        let grid = Arc::new(RwLock::new(Grid::new(0, 0)));
+        let grid = Arc::new(RwLock::new(Grid::new(0, 0, Arc::new(crate::config::TerminalConfig::default()))));
         let writer = Arc::new(Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>));
         let (tx, _rx) = async_channel::bounded(1);
 
@@ -328,7 +328,7 @@ mod tests {
     
     #[test]
     fn xy_to_cell_conversion() {
-        let grid = Arc::new(RwLock::new(Grid::new(10, 5)));
+        let grid = Arc::new(RwLock::new(Grid::new(10, 5, Arc::new(crate::config::TerminalConfig::default()))));
         {
             let mut g = grid.write().unwrap();
             g.scrollback = (0..30).map(|_| Cell::default()).collect();

@@ -35,6 +35,24 @@ impl Color {
     pub fn rgb(r: f64, g: f64, b: f64) -> Self {
         Self { r, g, b, a: 1.0 }
     }
+
+    /// Convert ANSI color index (0-15) to bright variant (8-15) for bold_is_bright compatibility
+    pub fn to_bright_ansi_color(&self) -> Self {
+        // If this color is one of the basic ANSI colors (0-7), return the bright version (8-15)
+        for (idx, &palette_color) in COLOR_PALETTE.iter().enumerate() {
+            if idx < 8 && *self == palette_color {
+                // Return corresponding bright color (add 8 to index)
+                return COLOR_PALETTE[idx + 8];
+            }
+        }
+        // If not a basic ANSI color, return unchanged
+        *self
+    }
+}
+
+// Utility function for bold_is_bright functionality - brighten ANSI colors when bold is enabled
+pub fn brighten_color(color: Color) -> Color {
+    color.to_bright_ansi_color()
 }
 
 // 16-color ANSI palette

@@ -229,6 +229,13 @@ impl UIRenderer for DummyUIRenderer {
     fn set_cursor_shape(&mut self, shape: CursorShape) {
         self.cursor_shape = Some(shape);
     }
+
+    fn handle_hyperlink(&mut self, url: &str) -> bool {
+        // Dummy backend just records that a hyperlink was handled
+        // In a real implementation, this would open the URL in a browser
+        eprintln!("Dummy backend: hyperlink clicked - {}", url);
+        true // Indicate it was handled
+    }
 }
 
 /// Dummy input handler - records operations
@@ -332,7 +339,7 @@ mod tests {
             scroll_events: Vec::new(),
         };
 
-        let grid = Arc::new(RwLock::new(Grid::new(80, 24)));
+        let grid = Arc::new(RwLock::new(Grid::new(80, 24, Arc::new(crate::config::TerminalConfig::default()))));
         let writer = Arc::new(Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>));
 
         let key_event = KeyEvent { keyval: 'a' as u32, state: 0 };
@@ -379,9 +386,10 @@ mod resource_management_tests {
             enable_selection: false,
             scrollback_limit: 1000,
             click_timeout_ms: 300,
+            bold_is_bright: true,
         };
 
-        let terminal = VteTerminalCore::with_config(config).expect("Failed to create terminal for testing");
+        let terminal = VteTerminalCore::new().expect("Failed to create terminal for testing");
         let memory_info = terminal.get_memory_usage();
 
         // MemoryInfo should have positive values for all buffers
@@ -413,9 +421,10 @@ mod resource_management_tests {
             enable_selection: false,
             scrollback_limit: 1000,
             click_timeout_ms: 300,
+            bold_is_bright: true,
         };
 
-        let terminal = VteTerminalCore::with_config(config).expect("Failed to create terminal for cleanup testing");
+        let terminal = VteTerminalCore::new().expect("Failed to create terminal for cleanup testing");
 
         // Get initial memory usage
         let initial_memory = terminal.get_memory_usage();

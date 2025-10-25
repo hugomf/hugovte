@@ -3,9 +3,10 @@
 use crate::cairo_renderer::{CairoTextRenderer, CairoGraphicsRenderer, CairoUIRenderer};
 use crate::input::{Gtk4InputHandler, Gtk4EventLoop};
 use gtk4::DrawingArea;
+use gtk4::prelude::DrawingAreaExtManual;
 use cairo;
-use vte_core::{VteTerminalCore, TerminalConfig, Renderer, ImageData, Cell, Color, CharMetrics, CursorShape, TerminalError};
-use vte_core::drawing::DrawingCache;
+use vte_core::{VteTerminalCore, TerminalConfig, Renderer, ImageData, Cell, Color, CursorShape, TerminalError};
+use vte_core::font::FontCache;
 use async_channel::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::io::Write;
@@ -31,10 +32,10 @@ impl Gtk4Backend {
         let (redraw_tx, redraw_rx) = async_channel::unbounded::<()>();
 
         // Create terminal core
-        let mut terminal = VteTerminalCore::with_config(config.clone());
+        let terminal = VteTerminalCore::new()?;
 
         // Set up drawing
-        let terminal_clone = Arc::clone(&terminal.grid);
+        let terminal_clone: Arc<std::sync::RwLock<vte_core::grid::Grid>> = Arc::clone(&terminal.grid);
         let redraw_tx_clone = redraw_tx.clone();
 
         let drawing_config = config.clone();
@@ -117,12 +118,12 @@ pub struct Gtk4Renderer {
 }
 
 impl Gtk4Renderer {
-    pub fn new(context: &cairo::Context, area: &DrawingArea, char_w: f64, char_h: f64) -> Self {
-        // Create backend-agnostic drawing cache
-        let drawing_cache = DrawingCache::new("monospace", 13.0)
-            .unwrap_or_else(|_| panic!("Failed to create drawing cache"));
+    pub fn new(context: &cairo::Context, _area: &DrawingArea, char_w: f64, char_h: f64) -> Self {
+        // Create font cache with fallback chains
+        let font_cache = FontCache::new("DejaVu Sans Mono", 13.0)
+            .unwrap_or_else(|_| panic!("Failed to create font cache"));
 
-        let text_renderer = CairoTextRenderer::new(context.clone(), drawing_cache)
+        let text_renderer = CairoTextRenderer::new(context.clone(), font_cache, char_w, char_h)
             .unwrap_or_else(|_| panic!("Failed to create text renderer"));
         let graphics_renderer = CairoGraphicsRenderer::new(context.clone());
         let ui_renderer = CairoUIRenderer::new(context.clone());

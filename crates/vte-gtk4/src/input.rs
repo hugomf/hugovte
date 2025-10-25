@@ -1,9 +1,10 @@
 //! Input handling for GTK4 backend
 
-use gtk4::{DrawingArea, EventControllerKey, EventControllerMotion, EventControllerScroll, GestureClick};
+use gtk4::{DrawingArea, EventControllerKey, EventControllerMotion, EventControllerScroll, GestureClick, EventControllerScrollFlags};
 use gtk4::gdk;
 use gtk4::prelude::*;
 use glib;
+use glib::Propagation;
 use std::sync::{Arc, Mutex};
 use std::io::Write;
 use vte_core::{InputHandler, EventLoop};
@@ -123,7 +124,7 @@ impl Gtk4InputHandler {
         area.add_controller(motion_controller);
 
         // Mouse wheel scrolling
-        let scroll_controller = EventControllerScroll::new();
+        let scroll_controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
         scroll_controller.connect_scroll(move |_, _, dy| {
             if let Ok(mut g) = grid.write() {
                 let lines = (dy * 3.0) as isize; // 3 lines per scroll unit
@@ -131,7 +132,7 @@ impl Gtk4InputHandler {
                     .max(0) as usize;
                 let _ = redraw_tx.send_blocking(());
             }
-            gtk4::Propagation::Stop
+            Propagation::Stop
         });
 
         area.add_controller(scroll_controller);
@@ -143,22 +144,22 @@ impl Gtk4InputHandler {
         grid: &Arc<std::sync::RwLock<vte_core::Grid>>,
         writer: &Arc<Mutex<Box<dyn Write + Send>>>,
         redraw_tx: &Sender<()>,
-    ) -> gtk4::Propagation {
+    ) -> Propagation {
         // Copy/Paste handling
         if Self::handle_copy_paste(keyval, state, grid, writer, redraw_tx) {
-            return gtk4::Propagation::Stop;
+            return Propagation::Stop;
         }
 
         // Keyboard scrolling (Shift + Page/Arrow keys)
         if state.contains(gdk::ModifierType::SHIFT_MASK) && Self::handle_scroll_keys(keyval, grid, redraw_tx) {
-            return gtk4::Propagation::Stop;
+            return Propagation::Stop;
         }
 
         // Special keys
         if let Some(seq) = Self::handle_special_keys(keyval, state) {
             Self::write_to_writer(writer, &seq);
             let _ = redraw_tx.send_blocking(());
-            return gtk4::Propagation::Stop;
+            return Propagation::Stop;
         }
 
         // Unicode input
@@ -168,7 +169,7 @@ impl Gtk4InputHandler {
             let _ = redraw_tx.send_blocking(());
         }
 
-        gtk4::Propagation::Stop
+        Propagation::Stop
     }
 
     fn handle_copy_paste(

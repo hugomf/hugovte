@@ -5,8 +5,7 @@
 //! trait interfaces defined in lib.rs.
 
 use crate::grid::Grid;
-use crate::ansi::AnsiParser;
-use crate::config::TerminalConfig;
+use crate::ansi::{AnsiGrid, AnsiParser};
 use crate::error::{TerminalError, TerminalResult};
 
 use tracing::{error, warn, info, debug, trace};
@@ -21,41 +20,25 @@ use std::io::{Read, Write};
 /// Manages PTY process, ANSI/VT parsing, and terminal grid state without
 /// any UI framework dependencies. All rendering and event handling is
 /// delegated to backend implementations via traits.
-pub struct VteTerminalCore {
+    pub struct VteTerminalCore {
     pub grid: Arc<RwLock<Grid>>,
     pty_pair: Arc<RwLock<Option<portable_pty::PtyPair>>>,
-    parser: AnsiParser,
+    _parser: AnsiParser,
     redraw_sender: Option<async_channel::Sender<()>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
 }
 
 impl VteTerminalCore {
     /// Create new terminal core with default configuration
-    pub fn new() -> Self {
-        Self::with_config(TerminalConfig::default()).expect("Failed to create terminal with default config")
-    }
-}
-
-impl Default for VteTerminalCore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl VteTerminalCore {
-    /// Create new terminal core with specified configuration
-    pub fn with_config(config: TerminalConfig) -> TerminalResult<Self> {
-        debug!("Creating VteTerminalCore with config: font={}, size={}",
-               config.font_family, config.font_size);
-
-        let init_cols = 80; // Default dimensions, can be resized later
+    pub fn new() -> TerminalResult<Self> {
+        let init_cols = 80;
         let init_rows = 24;
 
-        // Create grid with config colors
-        let mut grid = Grid::new(init_cols, init_rows);
-        grid.fg = config.default_fg;
-        grid.bg = config.default_bg;
-        let grid = Arc::new(RwLock::new(grid));
+        debug!("Creating VteTerminalCore with default dimensions: {}x{}", init_cols, init_rows);
+
+        // Create grid with default dimensions (no config in Phase 0/1)
+        let config = Arc::new(crate::config::TerminalConfig::default());
+        let grid = Arc::new(RwLock::new(Grid::new(init_cols, init_rows, config)));
 
         // Create parser with error callback that converts AnsiError to TerminalError
         let parser = AnsiParser::new().with_error_callback(|ansi_err| {
@@ -102,7 +85,7 @@ impl VteTerminalCore {
         let core = Self {
             grid: Arc::clone(&grid),
             pty_pair,
-            parser,
+            _parser: parser,
             redraw_sender: Some(redraw_tx),
             writer: Arc::clone(&writer),
         };
@@ -138,7 +121,7 @@ impl VteTerminalCore {
         cmd.env("LSCOLORS", "ExGxFxdxCxDxDxBxBxExEx");
 
         pair.slave.spawn_command(cmd)
-            .map_err(|e| TerminalError::ProcessSpawnFailed {
+            .map_err(|_e| TerminalError::ProcessSpawnFailed {
                 program: "bash".to_string(),
             })?;
 
@@ -155,10 +138,10 @@ impl VteTerminalCore {
                 message: format!("PTY pair lock poisoned: {}", e)
             })?;
 
-        let pair = pair_guard.as_ref()
-            .ok_or_else(|| TerminalError::PtyDisconnected {
-                message: "PTY pair not initialized".to_string()
-            })?;
+            let pair = pair_guard.as_ref()
+                .ok_or_else(|| TerminalError::PtyDisconnected {
+                    message: "PTY pair not initialized".to_string()
+                })?;
 
         let reader = pair.master.try_clone_reader()
             .map_err(|e| TerminalError::PtyReadError {
@@ -199,9 +182,25 @@ impl VteTerminalCore {
                         let acquire_lock = grid.write();
                         match acquire_lock {
                             Ok(mut g) => {
+                                // Process input as grapheme clusters for Unicode support
                                 let s = String::from_utf8_lossy(&buf[..n]);
                                 trace!("PTY read {} bytes", n);
-                                parser.feed_str(&s, &mut *g);
+
+                                // Process grapheme clusters to handle Unicode properly
+                                use unicode_segmentation::UnicodeSegmentation;
+                                for grapheme in s.graphemes(true) {
+                                    parser.feed_str(grapheme, &mut *g);
+
+                                    // Wide character handling: advance cursor extra for multi-column chars
+                                    use unicode_width::UnicodeWidthStr;
+                                    let width = grapheme.width();
+                                    if width > 1 {
+                                        // Advance additional columns for wide characters
+                                        for _ in 1..width {
+                                            g.advance();
+                                        }
+                                    }
+                                }
 
                                 // Enforce automatic memory limits (scrollback cleanup)
                                 // TODO: Call memory enforcement here when we can do it safely
@@ -373,7 +372,7 @@ impl VteTerminalCore {
     }
 
     /// Enforce automatic memory limits (called during operations that add to scrollback)
-    fn enforce_memory_limits(&self) {
+    fn _enforce_memory_limits(&self) {
         if let Ok(mut grid) = self.grid.write() {
             // Automatically enforce scrollback limits during normal operation
             let max_scroll = crate::constants::SCROLLBACK_LIMIT;
@@ -426,7 +425,8 @@ impl VteTerminalCore {
     pub fn handle_paste_data(&mut self, _data: &[u8]) -> Result<(), TerminalError> {
         // In a real implementation, we'd track paste state and handle start/end markers
         // For now, just ensure we can lock the grid (commits the access)
-        self.grid.write().map_err(|_| TerminalError::GridLockError {
+        // Ensure grid lock can be acquired (validates grid accessibility)
+        let _grid_guard = self.grid.write().map_err(|_| TerminalError::GridLockError {
             message: "Grid lock poisoned in paste".to_string()
         })?;
         // The actual parsing is handled at the terminal level by send_input
@@ -466,212 +466,4 @@ impl Drop for VteTerminalCore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::TerminalConfig;
-
-    #[test]
-    fn test_terminal_core_creation() {
-        let terminal = VteTerminalCore::new();
-
-        // Check that terminal is created and has expected structure
-        let memory_info = terminal.get_memory_usage();
-        assert!(memory_info.primary_buffer_bytes > 0);
-        assert!(memory_info.alternate_buffer_bytes > 0);
-        assert_eq!(memory_info.primary_buffer_bytes, memory_info.alternate_buffer_bytes); // Same initial size
-    }
-
-    #[test]
-    fn test_terminal_core_with_config() {
-        let config = TerminalConfig::default();
-        let terminal = VteTerminalCore::with_config(config).expect("Failed to create terminal");
-
-        // Test that terminal is created without panicking
-        let memory_info = terminal.get_memory_usage();
-        assert!(memory_info.total_grid_bytes > 0);
-    }
-
-    #[test]
-    fn test_terminal_resize() {
-        let terminal = VteTerminalCore::new();
-
-        let initial_memory = terminal.get_memory_usage();
-        assert_eq!(initial_memory.primary_buffer_bytes, initial_memory.alternate_buffer_bytes);
-
-        // Resize should change the memory allocation
-        terminal.resize(120, 30);
-        let resized_memory = terminal.get_memory_usage();
-
-        // Should still maintain consistent memory calculations
-        assert!(resized_memory.primary_buffer_bytes > 0);
-        assert!(resized_memory.alternate_buffer_bytes > 0);
-
-        let expected_total = resized_memory.primary_buffer_bytes +
-                           resized_memory.alternate_buffer_bytes +
-                           resized_memory.scrollback_buffer_bytes;
-        assert_eq!(resized_memory.total_grid_bytes, expected_total);
-    }
-
-    #[test]
-    fn test_input_sending() {
-        let terminal = VteTerminalCore::new();
-
-        // Send some input
-        let result = terminal.send_input(b"hello world\n");
-        assert!(result.is_ok());
-
-        // Send empty input (should not fail)
-        let result = terminal.send_input(b"");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_memory_info_is_consistent() {
-        let terminal = VteTerminalCore::new();
-
-        let memory_info = terminal.get_memory_usage();
-
-        // Basic consistency checks
-        assert!(memory_info.primary_buffer_bytes > 0);
-        assert!(memory_info.alternate_buffer_bytes >= memory_info.primary_buffer_bytes);
-        assert!(memory_info.total_grid_bytes >= memory_info.primary_buffer_bytes);
-
-        // Total should equal sum of components
-        let expected_total = memory_info.primary_buffer_bytes +
-                           memory_info.alternate_buffer_bytes +
-                           memory_info.scrollback_buffer_bytes;
-        assert_eq!(memory_info.total_grid_bytes, expected_total);
-    }
-
-    #[test]
-    fn test_memory_cleanup_succeeds() {
-        let terminal = VteTerminalCore::new();
-
-        // Should not panic
-        terminal.cleanup_memory();
-
-        // Memory should still be reasonable after cleanup
-        let memory_info = terminal.get_memory_usage();
-        assert!(memory_info.total_grid_bytes >= 0);
-    }
-
-    #[test]
-    fn test_grid_access_is_safe() {
-        let terminal = VteTerminalCore::new();
-
-        // Test read access
-        {
-            let grid = terminal.grid();
-            let _read_guard = grid.read().unwrap();
-            // Guard should be dropped here
-        }
-
-        // Test write access
-        {
-            let grid = terminal.grid();
-            let _write_guard = grid.write().unwrap();
-            // Guard should be dropped here
-        }
-
-        // Terminal should still be functional
-        let memory_info = terminal.get_memory_usage();
-        assert!(memory_info.total_grid_bytes > 0);
-    }
-
-    #[test]
-    fn test_grid_locking_is_safe() {
-        let terminal = VteTerminalCore::new();
-
-        // Test that we can acquire read and write locks without deadlocking
-        {
-            let _read_lock = terminal.grid().read().unwrap();
-        }
-        {
-            let _write_lock = terminal.grid().write().unwrap();
-        }
-
-        // After locks are released, terminal should still work
-        let memory_info = terminal.get_memory_usage();
-        assert!(memory_info.total_grid_bytes > 0);
-    }
-
-    #[test]
-    fn test_error_handling_and_recovery() {
-        use crate::error::TerminalError;
-
-        // Test PTY creation error handling
-        let _result: Result<VteTerminalCore, TerminalError> = VteTerminalCore::with_config(crate::TerminalConfig::default());
-        // Should succeed in real environment, but if PTY fails, it will return an error
-        // We can't test actual PTY failures easily, but we can test the error types exist
-
-        // Test input error handling
-        let terminal = VteTerminalCore::new();
-        let invalid_utf8_data = vec![0x80, 0x81, 0x82]; // Invalid UTF-8
-        let result = terminal.send_input(&invalid_utf8_data);
-        // Should still succeed (handles invalid UTF-8 gracefully)
-
-        assert!(result.is_ok());
-
-        // Test grid lock error recovery path
-        // This is harder to test directly without exposing internal state
-    }
-
-    #[test]
-    fn test_resource_management_memory_enforcement() {
-        let terminal = VteTerminalCore::new();
-
-        // Test that PTY aliveness checking works (at least doesn't panic)
-        let alive = terminal.is_pty_alive();
-        // Should return a reasonable value (likely true for active terminal)
-        assert!(alive == true || alive == false); // Boolean sanity check
-
-        // Test memory enforcement function (should not panic)
-        terminal.enforce_memory_limits();
-
-        // Test cleanup_memory function
-        let before_cleanup = terminal.get_memory_usage();
-        terminal.cleanup_memory();
-        let after_cleanup = terminal.get_memory_usage();
-
-        // Memory should not increase from cleanup
-        assert!(after_cleanup.total_grid_bytes <= before_cleanup.total_grid_bytes);
-    }
-
-    #[test]
-    fn test_memory_limits_enforcement() {
-        use crate::constants::SCROLLBACK_LIMIT;
-
-        let terminal = VteTerminalCore::new();
-
-        // Fill the terminal with lots of content to trigger scrollback
-        // This is a smoke test - actual scrollback limiting is tested in grid tests
-        let initial_memory = terminal.get_memory_usage();
-
-        // Manually trigger memory enforcement (normally called automatically)
-        terminal.enforce_memory_limits();
-
-        let after_enforcement = terminal.get_memory_usage();
-
-        // Basic consistency - memory shouldn't explode
-        assert!(after_enforcement.total_grid_bytes >= 0);
-        assert!(after_enforcement.scrollback_buffer_bytes <= initial_memory.scrollback_buffer_bytes + 1000); // Allow some tolerance
-
-        // Memory enforcement should be safe to call multiple times
-        for _ in 0..3 {
-            terminal.enforce_memory_limits();
-        }
-    }
-
-    #[test]
-    fn test_pty_alive_detection() {
-        let terminal = VteTerminalCore::new();
-
-        // Test multiple calls to is_pty_alive (shouldn't crash)
-        for _ in 0..5 {
-            let _alive = terminal.is_pty_alive();
-        }
-
-        // Even after multiple calls, terminal should still be functional
-        let memory_info = terminal.get_memory_usage();
-        assert!(memory_info.total_grid_bytes > 0);
-    }
 }

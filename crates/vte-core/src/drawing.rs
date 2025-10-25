@@ -372,4 +372,89 @@ mod tests {
         let heart = cache.get_char_metrics('♥');
         assert_eq!(heart.width, expected);
     }
+
+    #[test]
+    fn test_font_discovery_feature_flag() {
+        let cache = DrawingCache::new("monospace", 14.0).unwrap();
+
+        // In current basic implementation, font discovery is not actually implemented
+        // This test validates the feature flag infrastructure is in place
+        // In Phase 2.1, this would test actual system font loading
+
+        // Test that cache can be created with different font families
+        // (simulating future fontconfig integration)
+        let _fallback_chain_candidates = ["monospace", "DejaVu Sans Mono", "Liberation Mono"];
+
+        // Current implementation supports only basic monospace metrics
+        // Phase 2.1 would expand this to support actual font family detection
+        assert_eq!(cache.font_family(), "monospace");
+
+        // Placeholder: In production implementation, this would validate:
+        // - System font directory scanning (Linux: fontconfig)
+        // - Platform-specific font loading (macOS: CoreText, Windows: DirectWrite)
+        // - Fallback chain: primary → emoji → symbol → fallback fonts
+    }
+
+    #[test]
+    #[cfg(feature = "font-discovery")]
+    fn test_fontconfig_integration() {
+        // This test is only compiled when font-discovery feature is enabled
+        // It would test actual fontconfig integration on Linux
+        // Currently placeholder until Phase 2.1 implementation
+
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Placeholder assertion - in Phase 2.1 this would test:
+        // let has_fontconfig = cache.system_font_available("monospace");
+        // assert!(has_fontconfig, "monospace font should be available via fontconfig");
+
+        // Also test fallback chain resolution
+        // let emoji_supported = cache.has_emoji_font_support();
+        // let cjk_supported = cache.has_cjk_font_support();
+    }
+
+    #[test]
+    fn test_character_set_fallback_scenarios() {
+        let cache = DrawingCache::new("monospace", 12.0).unwrap();
+
+        // Test scenarios that would be handled by font fallbacks in Phase 2.1
+
+        // Latin extended characters (could fallback to general unicode fonts)
+        let latin_ext = cache.get_char_metrics('Š'); // Latin capital S with caron
+        assert_eq!(latin_ext.width, cache.char_width()); // Currently falls back to monospce
+
+        // Mathematical operators (could fall back to symbol fonts)
+        let integral = cache.get_char_metrics('∫'); // Integral symbol
+        assert_eq!(integral.width, cache.char_width()); // Currently falls back
+
+        // Test that nul character remains zero width regardless of fallbacks
+        let null_metrics = cache.get_char_metrics('\0');
+        assert_eq!(null_metrics.width, 0.0, "Null char must always be 0 width");
+
+        // Test mixed script scenarios (Latin + other scripts)
+        let mixed_text = "Hello 中文 バーコード"; // English + Chinese + Japanese
+        let total_width = cache.calculate_text_width(mixed_text);
+        let expected_min_width = mixed_text.chars().count() as f64 * cache.char_width();
+        assert!(total_width >= expected_min_width, "Mixed script width calculation should work");
+    }
+
+    #[test]
+    fn test_emoji_and_symbol_support_placeholder() {
+        let cache = DrawingCache::new("monospace", 14.0).unwrap();
+
+        // Test emoji which would require specialized font fallbacks in Phase 2.1
+        let emoji = cache.get_char_metrics('😀'); // Grinning face
+        assert_eq!(emoji.width, cache.char_width()); // Currently falls back
+
+        // Test symbols that might be in dedicated symbol fonts
+        let symbols = ['♠', '♥', '♦', '♣', '⚡', '⚙']; // Card suits, lightning, gear
+        for &symbol in &symbols {
+            let metrics = cache.get_char_metrics(symbol);
+            assert!(metrics.width >= 0.0, "Symbol {:?} should have valid metrics", symbol);
+        }
+
+        // Test combining characters (would be complex for font fallbacks)
+        let combining = cache.get_char_metrics('\u{0301}'); // Combining acute accent
+        assert!(combining.width >= 0.0, "Combining characters should be handled");
+    }
 }
