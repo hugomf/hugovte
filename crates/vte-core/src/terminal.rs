@@ -246,15 +246,15 @@ impl VteTerminalCore {
         Ok(())
     }
 
-    /// Resize terminal to new dimensions
+    /// Resize terminal to new dimensions with line rewrapping
     pub fn resize(&self, cols: usize, rows: usize) {
-        debug!("Resizing terminal to {}x{}", cols, rows);
+        debug!("Resizing terminal to {}x{} with rewrapping", cols, rows);
 
-        // Update grid first
+        // Update grid first with rewrapping logic
         if let Ok(mut g) = self.grid.write() {
-            g.resize(cols, rows);
+            g.resize_with_rewrap(cols, rows);
         } else {
-            warn!("Failed to resize grid - lock error");
+            warn!("Failed to resize grid with rewrap - lock error");
             return;
         }
 
@@ -366,5 +366,136 @@ impl Drop for VteTerminalCore {
         }
 
         info!("VteTerminalCore resource cleanup completed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::TerminalConfig;
+
+    #[test]
+    fn test_terminal_core_creation() {
+        let terminal = VteTerminalCore::new();
+
+        // Check that terminal is created and has expected structure
+        let memory_info = terminal.get_memory_usage();
+        assert!(memory_info.primary_buffer_bytes > 0);
+        assert!(memory_info.alternate_buffer_bytes > 0);
+        assert_eq!(memory_info.primary_buffer_bytes, memory_info.alternate_buffer_bytes); // Same initial size
+    }
+
+    #[test]
+    fn test_terminal_core_with_config() {
+        let config = TerminalConfig::default();
+        let terminal = VteTerminalCore::with_config(config);
+
+        // Test that terminal is created without panicking
+        let memory_info = terminal.get_memory_usage();
+        assert!(memory_info.total_grid_bytes > 0);
+    }
+
+    #[test]
+    fn test_terminal_resize() {
+        let terminal = VteTerminalCore::new();
+
+        let initial_memory = terminal.get_memory_usage();
+        assert_eq!(initial_memory.primary_buffer_bytes, initial_memory.alternate_buffer_bytes);
+
+        // Resize should change the memory allocation
+        terminal.resize(120, 30);
+        let resized_memory = terminal.get_memory_usage();
+
+        // Should still maintain consistent memory calculations
+        assert!(resized_memory.primary_buffer_bytes > 0);
+        assert!(resized_memory.alternate_buffer_bytes > 0);
+
+        let expected_total = resized_memory.primary_buffer_bytes +
+                           resized_memory.alternate_buffer_bytes +
+                           resized_memory.scrollback_buffer_bytes;
+        assert_eq!(resized_memory.total_grid_bytes, expected_total);
+    }
+
+    #[test]
+    fn test_input_sending() {
+        let terminal = VteTerminalCore::new();
+
+        // Send some input
+        let result = terminal.send_input(b"hello world\n");
+        assert!(result.is_ok());
+
+        // Send empty input (should not fail)
+        let result = terminal.send_input(b"");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_memory_info_is_consistent() {
+        let terminal = VteTerminalCore::new();
+
+        let memory_info = terminal.get_memory_usage();
+
+        // Basic consistency checks
+        assert!(memory_info.primary_buffer_bytes > 0);
+        assert!(memory_info.alternate_buffer_bytes >= memory_info.primary_buffer_bytes);
+        assert!(memory_info.total_grid_bytes >= memory_info.primary_buffer_bytes);
+
+        // Total should equal sum of components
+        let expected_total = memory_info.primary_buffer_bytes +
+                           memory_info.alternate_buffer_bytes +
+                           memory_info.scrollback_buffer_bytes;
+        assert_eq!(memory_info.total_grid_bytes, expected_total);
+    }
+
+    #[test]
+    fn test_memory_cleanup_succeeds() {
+        let terminal = VteTerminalCore::new();
+
+        // Should not panic
+        terminal.cleanup_memory();
+
+        // Memory should still be reasonable after cleanup
+        let memory_info = terminal.get_memory_usage();
+        assert!(memory_info.total_grid_bytes >= 0);
+    }
+
+    #[test]
+    fn test_grid_access_is_safe() {
+        let terminal = VteTerminalCore::new();
+
+        // Test read access
+        {
+            let grid = terminal.grid();
+            let _read_guard = grid.read().unwrap();
+            // Guard should be dropped here
+        }
+
+        // Test write access
+        {
+            let grid = terminal.grid();
+            let _write_guard = grid.write().unwrap();
+            // Guard should be dropped here
+        }
+
+        // Terminal should still be functional
+        let memory_info = terminal.get_memory_usage();
+        assert!(memory_info.total_grid_bytes > 0);
+    }
+
+    #[test]
+    fn test_grid_locking_is_safe() {
+        let terminal = VteTerminalCore::new();
+
+        // Test that we can acquire read and write locks without deadlocking
+        {
+            let _read_lock = terminal.grid().read().unwrap();
+        }
+        {
+            let _write_lock = terminal.grid().write().unwrap();
+        }
+
+        // After locks are released, terminal should still work
+        let memory_info = terminal.get_memory_usage();
+        assert!(memory_info.total_grid_bytes > 0);
     }
 }

@@ -156,6 +156,198 @@ impl Grid {
         self.selection.clear();
     }
 
+    /// Resize with line rewrapping (like vte4)
+    /// Reflows text when terminal width changes by extracting logical lines
+    /// and rewrapping them to fit the new column width.
+    pub fn resize_with_rewrap(&mut self, new_cols: usize, new_rows: usize) {
+        if new_cols == self.cols && new_rows == self.rows {
+            return;
+        }
+
+        // Resize active buffer with rewrapping
+        let (new_active_cells, new_cursor_pos) = self.resize_buffer_with_rewrap(
+            self.active_cells().to_vec(),
+            new_cols,
+            new_rows,
+        );
+
+        // Resize alternate buffer without rewrapping (maintain as-is)
+        let new_total_alt = new_cols * new_rows;
+        let mut new_alt_cells = vec![Self::default_cell(); new_total_alt];
+
+        // Copy existing alternate content (simple resize, no rewrap)
+        for r in 0..self.rows.min(new_rows) {
+            for c in 0..self.cols.min(new_cols) {
+                let old_idx = r * self.cols + c;
+                let new_idx = r * new_cols + c;
+                if old_idx < self.alternate_cells.len() {
+                    new_alt_cells[new_idx] = self.alternate_cells[old_idx];
+                }
+            }
+        }
+
+        // Update buffers
+        if self.use_alternate_screen {
+            self.alternate_cells = new_active_cells;
+        } else {
+            self.cells = new_active_cells;
+        }
+
+        let old_cols = self.cols;
+        let old_rows = self.rows;
+        self.cols = new_cols;
+        self.rows = new_rows;
+
+        // Update cursor position - if buffer with rewrap gave (0,0), use simple clamping
+        if new_cursor_pos == (0, 0) && old_cols > 0 && old_rows > 0 {
+            // For empty or simple cases, just clamp cursor to new bounds
+            self.col = self.col.min(new_cols.saturating_sub(1));
+            self.row = self.row.min(new_rows.saturating_sub(1));
+        } else {
+            // Use calculated position from rewrapping logic
+            self.col = new_cursor_pos.0.min(new_cols.saturating_sub(1));
+            self.row = new_cursor_pos.1.min(new_rows.saturating_sub(1));
+        }
+
+        self.selection.clear();
+    }
+
+    /// Resize a specific buffer with rewrapping logic
+    fn resize_buffer_with_rewrap(&self, old_cells: Vec<Cell>, new_cols: usize, new_rows: usize)
+        -> (Vec<Cell>, (usize, usize)) {
+
+        if self.cols == 0 {
+            return (vec![Self::default_cell(); new_cols * new_rows], (0, 0));
+        }
+
+        // Extract logical lines (merge wrapped lines)
+        let logical_lines = self.extract_logical_lines_from_buffer(&old_cells);
+
+        // Rewrap logical lines to new column width
+        let mut rewrapped_lines = Vec::new();
+        let mut cursor_pos = (0, 0); // Default position for empty buffers
+
+        // Calculate the cursor's absolute character position in the logical layout
+        let mut absolute_cursor_pos = 0;
+        if self.row < self.rows {
+            for (logical_idx, line) in logical_lines.iter().enumerate() {
+                if logical_idx < self.row {
+                    // Count all content in previous rows
+                    absolute_cursor_pos += line.len();
+                } else if logical_idx == self.row {
+                    // Add characters in the current row up to and including cursor position
+                    for col in 0..=self.col {
+                        if col < line.len() {
+                            absolute_cursor_pos += 1;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Rewrap each logical line to fit new width
+        let mut current_row = 0;
+
+        for logical_line in logical_lines.into_iter() {
+            if current_row >= new_rows {
+                // No more room, line is lost
+                break;
+            }
+
+            let wrapped = self.wrap_line(&logical_line, new_cols);
+
+            for wrapped_row in wrapped.into_iter() {
+                if current_row >= new_rows {
+                    break;
+                }
+
+                // Place row in new grid
+                rewrapped_lines.push(wrapped_row);
+                current_row += 1;
+            }
+        }
+
+        // Convert absolute cursor position to new grid coordinates
+        if absolute_cursor_pos > 0 {
+            cursor_pos = (
+                (absolute_cursor_pos - 1) % new_cols,  // column within row (0-based)
+                (absolute_cursor_pos - 1) / new_cols   // row number (0-based)
+            );
+        }
+
+        // Pad remaining rows with default cells
+        while rewrapped_lines.len() < new_rows {
+            rewrapped_lines.push(vec![Self::default_cell(); new_cols]);
+        }
+
+        // Flatten rows into flat cell array
+        let mut new_cells = Vec::with_capacity(new_cols * new_rows);
+        for row in rewrapped_lines {
+            new_cells.extend(row);
+        }
+
+        (new_cells, cursor_pos)
+    }
+
+    /// Extract logical lines from a buffer (merge hard-wrapped lines)
+    fn extract_logical_lines_from_buffer(&self, buffer: &[Cell]) -> Vec<Vec<Cell>> {
+        let mut logical_lines = Vec::new();
+
+        for row in 0..self.rows {
+            let row_start = row * self.cols;
+
+            // Check if this row exists in buffer
+            if (row_start + self.cols) > buffer.len() {
+                break;
+            }
+
+            let row_slice = &buffer[row_start..row_start + self.cols];
+
+            // Find the actual content in this row (cells with non-null characters)
+            let mut line_cells = Vec::new();
+            for cell in row_slice {
+                if cell.ch != '\0' {
+                    line_cells.push(*cell);
+                } else {
+                    break; // Stop at first null (line terminator)
+                }
+            }
+
+            // Only include non-empty lines
+            if !line_cells.is_empty() {
+                logical_lines.push(line_cells);
+            }
+        }
+
+        logical_lines
+    }
+
+    /// Wrap a logical line to fit new column width
+    fn wrap_line(&self, line: &[Cell], new_cols: usize) -> Vec<Vec<Cell>> {
+        let mut wrapped = Vec::new();
+        let mut current_row = Vec::new();
+
+        for &cell in line {
+            current_row.push(cell);
+
+            if current_row.len() >= new_cols {
+                wrapped.push(current_row.clone());
+                current_row.clear();
+            }
+        }
+
+        // Pad last row if needed, or add it if not empty
+        if !current_row.is_empty() {
+            while current_row.len() < new_cols {
+                current_row.push(Self::default_cell());
+            }
+            wrapped.push(current_row);
+        }
+
+        wrapped
+    }
+
     // Selection delegation
     pub fn clear_selection(&mut self) {
         self.selection.clear();
@@ -1096,5 +1288,213 @@ mod tests {
         // Toggle back
         grid.toggle_cursor();
         assert!(grid.is_cursor_visible());
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_basic() {
+        let mut grid = Grid::new(5, 3);
+
+        // Fill with content: "AAAAA\nBBBBB\nCCCCC"
+        for col in 0..5 {
+            *grid.get_cell_mut(0, col) = Cell { ch: 'A', ..Default::default() };
+            *grid.get_cell_mut(1, col) = Cell { ch: 'B', ..Default::default() };
+            *grid.get_cell_mut(2, col) = Cell { ch: 'C', ..Default::default() };
+        }
+
+        // Resize to 3 columns - should rewrap lines
+        grid.resize_with_rewrap(3, 3);
+
+        // Lines should be rewrapped: each row now fits 3 chars
+        // "AAAAA" becomes "AAA" and "AA" (but since we have 3 rows, second part may be truncated)
+        assert_eq!(grid.get_cell(0, 0).ch, 'A');
+        assert_eq!(grid.get_cell(0, 1).ch, 'A');
+        assert_eq!(grid.get_cell(0, 2).ch, 'A');
+
+        // Check dimensions changed
+        assert_eq!(grid.cols, 3);
+        assert_eq!(grid.rows, 3);
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_merge_lines() {
+        let mut grid = Grid::new(5, 3);
+
+        // Create wrapped lines (simulate hard wrapping)
+        // Row 0: "AAAAA" (full width)
+        // Row 1: "BBB" (partial - simulates logical line continuing)
+        for col in 0..5 {
+            *grid.get_cell_mut(0, col) = Cell { ch: 'A', ..Default::default() };
+        }
+        for col in 0..3 {
+            *grid.get_cell_mut(1, col) = Cell { ch: 'B', ..Default::default() };
+        }
+        // Row 2: empty (logical line break)
+
+        // When resizing to 4 columns, should merge "AAAAA" + "BBB" = "AAAAABBB" into "AAAA", "AABB", "B"
+        grid.resize_with_rewrap(4, 3);
+
+        // Check that content was preserved and rewrapped
+        assert_eq!(grid.get_cell(0, 0).ch, 'A');
+        assert_eq!(grid.get_cell(0, 1).ch, 'A');
+        assert_eq!(grid.get_cell(0, 2).ch, 'A');
+        assert_eq!(grid.get_cell(0, 3).ch, 'A');
+
+        if grid.rows >= 2 {
+            assert_eq!(grid.get_cell(1, 0).ch, 'A'); // 5th A
+        }
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_cursor_positioning() {
+        let mut grid = Grid::new(5, 3);
+
+        // Put content and position cursor in middle of logical line
+        for col in 0..4 {
+            *grid.get_cell_mut(0, col) = Cell { ch: 'A', ..Default::default() };
+        }
+        // Row 1 partial (continuing logical line)
+        for col in 0..3 {
+            *grid.get_cell_mut(1, col) = Cell { ch: 'B', ..Default::default() };
+        }
+
+        // Position cursor at col 2, row 1 (6th char in logical line "AAAABBB")
+        grid.move_abs(1, 2);
+
+        // Resize to wider (10 columns) - should unwrap lines
+        grid.resize_with_rewrap(10, 3);
+
+        // Cursor should follow the logical line position
+        // Original position: row 1, col 2 -> logical position: 4 + 3 = 7th char (0-indexed)
+        // For absolute_cursor_pos = 7: (7-1)%10 = 6, so column 6
+        assert_eq!(grid.row, 0);
+        assert_eq!(grid.col, 6);
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_cursor_bounds() {
+        let mut grid = Grid::new(5, 3);
+
+        // Position cursor near edge
+        grid.move_abs(2, 4); // Bottom right
+
+        // Resize smaller
+        grid.resize_with_rewrap(2, 2);
+
+        // Cursor should be clamped to new bounds
+        assert_eq!(grid.row, 1); // 2 clamped to 1
+        assert_eq!(grid.col, 1); // 4 clamped to 1
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_alternate_screen() {
+        let mut grid = Grid::new(5, 3);
+
+        // Put content on primary
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'P', ..Default::default() };
+
+        // Switch to alternate screen
+        grid.use_alternate_screen(true);
+
+        // Put different content on alternate
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+        for col in 0..4 {
+            *grid.get_cell_mut(1, col) = Cell { ch: 'B', ..Default::default() };
+        }
+
+        // Resize with rewrap (should only affect alternate screen)
+        grid.resize_with_rewrap(3, 2);
+
+        // Alternate screen content should be rewrapped
+        assert_eq!(grid.get_cell(0, 0).ch, 'A'); // First "A" moves to first row
+        assert_eq!(grid.get_cell(1, 0).ch, 'B'); // "B"s should wrap
+
+        // Switch back to primary - should still have original content
+        grid.use_alternate_screen(false);
+        assert_eq!(grid.get_cell(0, 0).ch, 'P');
+    }
+
+    #[test]
+    fn test_extract_logical_lines() {
+        let mut grid = Grid::new(4, 3);
+
+        // Create test buffer: row 0 fully filled, row 1 partially filled, row 2 empty
+        for col in 0..4 {
+            *grid.get_cell_mut(0, col) = Cell { ch: 'A', ..Default::default() };
+        }
+        for col in 0..2 {
+            *grid.get_cell_mut(1, col) = Cell { ch: 'B', ..Default::default() };
+        }
+        // Row 2 empty
+
+        let logical_lines = grid.extract_logical_lines_from_buffer(&grid.cells);
+
+        // Should extract 2 logical lines: "AAAA" and "BB"
+        assert_eq!(logical_lines.len(), 2);
+        assert_eq!(logical_lines[0].len(), 4); // "AAAA"
+        assert_eq!(logical_lines[1].len(), 2); // "BB"
+
+        assert_eq!(logical_lines[0][0].ch, 'A');
+        assert_eq!(logical_lines[1][0].ch, 'B');
+        assert_eq!(logical_lines[1][1].ch, 'B');
+    }
+
+    #[test]
+    fn test_wrap_line() {
+        let mut grid = Grid::new(5, 3);
+
+        // Create logical line longer than new width
+        let logical_line: Vec<Cell> = "ABCDEFGHIJ".chars()
+            .map(|ch| Cell { ch, ..Default::default() })
+            .collect();
+
+        let wrapped = grid.wrap_line(&logical_line, 4);
+
+        // Should wrap "ABCDEFGHIJ" as: "ABCD", "EFGH", "IJ"
+        assert_eq!(wrapped.len(), 3);
+        assert_eq!(wrapped[0].len(), 4); // "ABCD"
+        assert_eq!(wrapped[1].len(), 4); // "EFGH"
+        assert_eq!(wrapped[2].len(), 4); // "IJ  " (padded)
+
+        assert_eq!(wrapped[0][0].ch, 'A');
+        assert_eq!(wrapped[0][1].ch, 'B');
+        assert_eq!(wrapped[1][0].ch, 'E');
+        assert_eq!(wrapped[2][0].ch, 'I');
+        assert_eq!(wrapped[2][1].ch, 'J');
+        assert_eq!(wrapped[2][2].ch, '\0'); // padding
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_no_change() {
+        let mut grid = Grid::new(5, 3);
+
+        // Put some content
+        *grid.get_cell_mut(0, 0) = Cell { ch: 'A', ..Default::default() };
+
+        // Resize to same dimensions - should be no-op
+        grid.resize_with_rewrap(5, 3);
+
+        // Content should be unchanged
+        assert_eq!(grid.get_cell(0, 0).ch, 'A');
+        assert_eq!(grid.cols, 5);
+        assert_eq!(grid.rows, 3);
+    }
+
+    #[test]
+    fn test_resize_with_rewrap_empty_grid() {
+        let mut grid = Grid::new(5, 3);
+
+        // Empty grid
+        grid.resize_with_rewrap(4, 2);
+
+        // Should work without panicking
+        assert_eq!(grid.cols, 4);
+        assert_eq!(grid.rows, 2);
+
+        // All cells should be default (null)
+        for row in 0..2 {
+            for col in 0..4 {
+                assert_eq!(grid.get_cell(row, col).ch, '\0');
+            }
+        }
     }
 }

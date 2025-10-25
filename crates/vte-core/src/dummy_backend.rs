@@ -1,6 +1,7 @@
 //! Dummy backend for testing trait implementations without GTK
 
-use crate::{Renderer, TextRenderer, GraphicsRenderer, UIRenderer, InputHandler, EventLoop, CharMetrics, CursorShape, ImageData, Grid, Cell};
+use crate::{Renderer, TextRenderer, GraphicsRenderer, UIRenderer, InputHandler, EventLoop, CursorShape, ImageData, Grid, Cell};
+use crate::drawing::CharMetrics;
 use std::io::Write;
 use std::sync::{Arc, RwLock, Mutex};
 
@@ -37,6 +38,76 @@ impl Renderer for DummyBackend {
     }
     fn ui_renderer(&mut self) -> &mut dyn UIRenderer {
         &mut self.ui_renderer
+    }
+}
+
+// Combine DummyBackend with separate input handler and event loop for proper trait composition
+pub struct CompleteDummyBackend {
+    backend: DummyBackend,
+    input_handler: DummyInputHandler,
+    event_loop: DummyEventLoop,
+}
+
+impl CompleteDummyBackend {
+    pub fn new() -> Self {
+        CompleteDummyBackend {
+            backend: DummyBackend::new(),
+            input_handler: DummyInputHandler {
+                key_events: Vec::new(),
+                mouse_events: Vec::new(),
+                scroll_events: Vec::new(),
+            },
+            event_loop: DummyEventLoop {
+                redraws: Vec::new(),
+                timers: Vec::new(),
+            },
+        }
+    }
+}
+
+use crate::Backend;
+impl Backend for CompleteDummyBackend {
+    fn resize(&mut self, _cols: usize, _rows: usize) {
+        // For testing, we could track resize operations
+        // For now, just a placeholder
+    }
+}
+
+impl Renderer for CompleteDummyBackend {
+    fn text_renderer(&mut self) -> &mut dyn TextRenderer {
+        self.backend.text_renderer()
+    }
+
+    fn graphics_renderer(&mut self) -> &mut dyn GraphicsRenderer {
+        self.backend.graphics_renderer()
+    }
+
+    fn ui_renderer(&mut self) -> &mut dyn UIRenderer {
+        self.backend.ui_renderer()
+    }
+}
+
+impl InputHandler for CompleteDummyBackend {
+    fn handle_key(&mut self, key: crate::ansi::KeyEvent, grid: &Arc<RwLock<Grid>>, writer: &Arc<Mutex<Box<dyn Write + Send>>>) {
+        self.input_handler.handle_key(key, grid, writer);
+    }
+
+    fn handle_mouse(&mut self, event: crate::ansi::MouseEvent, grid: &Arc<RwLock<Grid>>) {
+        self.input_handler.handle_mouse(event, grid);
+    }
+
+    fn handle_scroll(&mut self, delta: f64, grid: &Arc<RwLock<Grid>>) {
+        self.input_handler.handle_scroll(delta, grid);
+    }
+}
+
+impl EventLoop for CompleteDummyBackend {
+    fn schedule_redraw(&mut self, callback: Box<dyn FnMut()>) {
+        self.event_loop.schedule_redraw(callback);
+    }
+
+    fn schedule_timer(&mut self, interval_ms: u64, callback: Box<dyn FnMut() -> bool>) -> bool {
+        self.event_loop.schedule_timer(interval_ms, callback)
     }
 }
 
