@@ -3,6 +3,7 @@ target/
 
 # macOS
 .DS_Store
+**/.DS_Store
 
 # Backup and temporary files
 *.bkup
